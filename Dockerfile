@@ -1,26 +1,39 @@
-FROM node:22-alpine
+# syntax=docker/dockerfile:1
+
+FROM node:22-bookworm-slim AS build
 
 WORKDIR /app
 
-ENV NODE_ENV=production \
-    PORT=3000
+ENV NPM_CONFIG_REGISTRY=https://registry.npmjs.org/ \
+    NPM_CONFIG_AUDIT=false \
+    NPM_CONFIG_FUND=false \
+    NPM_CONFIG_UPDATE_NOTIFIER=false \
+    NPM_CONFIG_FETCH_RETRIES=5 \
+    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=10000 \
+    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=60000
 
-COPY package*.json ./
+COPY package.json package-lock.json ./
 
-RUN npm config set registry https://registry.npmjs.org/ \
-    && npm config set fetch-retries 5 \
-    && npm config set fetch-retry-mintimeout 20000 \
-    && npm config set fetch-retry-maxtimeout 120000 \
-    && npm ci --omit=dev --no-audit --no-fund --ignore-scripts \
-    && npm cache clean --force
+RUN npm ci --no-audit --no-fund --prefer-online
 
-COPY --chown=node:node dist ./dist
+COPY . .
 
-USER node
+ARG VITE_DIRECTUS_URL=https://websites-games.chn0vc.easypanel.host
+ARG VITE_BASE_PATH=/
 
-EXPOSE 3000
+ENV VITE_DIRECTUS_URL=${VITE_DIRECTUS_URL} \
+    VITE_BASE_PATH=${VITE_BASE_PATH}
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:3000/health || exit 1
+RUN npm run build
 
-CMD ["node", "dist/server.js"]
+FROM nginx:1.29-alpine AS runtime
+
+LABEL org.opencontainers.image.version="2.8.1"
+
+COPY deploy/nginx-container.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/dist /usr/share/nginx/html
+
+EXPOSE 80
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1/ || exit 1
