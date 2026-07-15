@@ -38,7 +38,7 @@ export function createDefaultSetup(content: ContentBundle): GameSetup {
     },
     maxCards: Math.min(20, Math.max(1, content.settings.maximum_cards_per_session || 20)),
     intenseConsent: false,
-    gameMasterEnabled: false,
+    gameMasterEnabled: content.settings.game_master_enabled && content.settings.game_master_default_on,
   };
 }
 
@@ -67,6 +67,9 @@ export function createSession(content: ContentBundle, setup: GameSetup): Session
     gmReaction: 'none',
     gmEvents: [],
     gmFallbackUsed: false,
+    gmProvider: null,
+    gmModel: null,
+    gmLatencyMs: null,
   };
 }
 
@@ -199,6 +202,9 @@ export function applyCardSelection(
     hostMessage?: string | null;
     strategy?: string | null;
     fallbackUsed?: boolean;
+    provider?: 'openai' | 'adaptive_fallback' | 'frontend_fallback' | null;
+    model?: string | null;
+    latencyMs?: number | null;
   },
 ): SessionState {
   return {
@@ -217,6 +223,9 @@ export function applyCardSelection(
     gmStrategy: gameMaster?.strategy ?? null,
     gmReaction: 'none',
     gmFallbackUsed: gameMaster?.fallbackUsed ?? false,
+    gmProvider: gameMaster?.provider ?? null,
+    gmModel: gameMaster?.model ?? null,
+    gmLatencyMs: gameMaster?.latencyMs ?? null,
   };
 }
 

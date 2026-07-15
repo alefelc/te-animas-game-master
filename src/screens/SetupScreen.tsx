@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { ContentBundle, GameSetup, Id, SafetyFilters } from '../types';
 import { Icon } from '../components/Icon';
 import { TopBar } from '../components/TopBar';
 import { previewEligibleCount } from '../engine/session';
 import { env } from '../env';
-import { checkGameMasterAvailability } from '../api/game-master';
 
 function toggleId(values: Id[], id: Id): Id[] {
   return values.includes(id) ? values.filter((value) => value !== id) : [...values, id];
@@ -15,22 +14,14 @@ function ChoiceToggle({
   title,
   description,
   onChange,
-  disabled = false,
 }: {
   checked: boolean;
   title: string;
   description?: string | null;
   onChange: () => void;
-  disabled?: boolean;
 }) {
   return (
-    <button
-      className={`choice-toggle ${checked ? 'selected' : ''}`}
-      type="button"
-      onClick={onChange}
-      aria-pressed={checked}
-      disabled={disabled}
-    >
+    <button className={`choice-toggle ${checked ? 'selected' : ''}`} type="button" onClick={onChange} aria-pressed={checked}>
       <span className="choice-check">{checked && <Icon name="check" />}</span>
       <span><b>{title}</b>{description && <small>{description}</small>}</span>
     </button>
@@ -99,61 +90,9 @@ export function SetupScreen({
   const steps = stepContent.map((item) => item.label);
 
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [gameMasterStatus, setGameMasterStatus] = useState<
-    'checking' | 'available' | 'unavailable'
-  >(env.gameMasterUrl ? 'checking' : 'unavailable');
-
-  const eligibleCount = useMemo(
-    () => previewEligibleCount(content, setup),
-    [content, setup],
-  );
-
-  const requiresIntenseConsent = content.levels.some(
-    (level) =>
-      setup.levelIds.includes(level.id) &&
-      level.requires_confirmation,
-  );
-
-  useEffect(() => {
-    let active = true;
-
-    if (!content.settings.game_master_enabled || !env.gameMasterUrl) {
-      setGameMasterStatus('unavailable');
-
-      if (setup.gameMasterEnabled) {
-        updateSetup({ gameMasterEnabled: false });
-      }
-
-      return () => {
-        active = false;
-      };
-    }
-
-    setGameMasterStatus('checking');
-
-    void checkGameMasterAvailability(true).then((available) => {
-      if (!active) return;
-
-      setGameMasterStatus(
-        available ? 'available' : 'unavailable',
-      );
-
-      if (!available && setup.gameMasterEnabled) {
-        updateSetup({ gameMasterEnabled: false });
-      }
-    });
-
-    return () => {
-      active = false;
-    };
-  }, [
-    content.settings.game_master_enabled,
-    setup.gameMasterEnabled,
-    updateSetup,
-  ]);
-
-  const gameMasterAvailable =
-    gameMasterStatus === 'available';
+  const eligibleCount = useMemo(() => previewEligibleCount(content, setup), [content, setup]);
+  const requiresIntenseConsent = content.levels.some((level) => setup.levelIds.includes(level.id) && level.requires_confirmation);
+  const gameMasterAvailable = Boolean(env.gameMasterUrl);
   const peopleConfigured = Boolean(
     setup.playerOneSexId && setup.playerTwoSexId
   );
@@ -277,25 +216,39 @@ export function SetupScreen({
 
             {content.settings.game_master_enabled && (
               <div className="game-master-setup">
+                <div className="game-master-availability">
+                  <span
+                    className={
+                      gameMasterAvailable
+                        ? setup.gameMasterEnabled
+                          ? 'online'
+                          : 'disabled'
+                        : 'offline'
+                    }
+                  />
+                  <b>
+                    {gameMasterAvailable
+                      ? setup.gameMasterEnabled
+                        ? 'Conectado y activado'
+                        : 'Conectado, pero desactivado'
+                      : 'No conectado'}
+                  </b>
+                </div>
+
                 <ChoiceToggle
-                  checked={
-                    setup.gameMasterEnabled &&
-                    gameMasterAvailable
-                  }
+                  checked={setup.gameMasterEnabled && gameMasterAvailable}
                   title={content.settings.game_master_title}
                   description={
-                    gameMasterStatus === 'checking'
-                      ? 'Comprobando disponibilidad…'
-                      : gameMasterAvailable
-                        ? content.settings.game_master_description
-                        : 'La partida normal sigue disponible.'
+                    gameMasterAvailable
+                      ? content.settings.game_master_description
+                      : 'No se pudo conectar el Game Master.'
                   }
-                  disabled={!gameMasterAvailable}
                   onChange={() => {
-                    updateSetup({
-                      gameMasterEnabled:
-                        !setup.gameMasterEnabled,
-                    });
+                    if (gameMasterAvailable) {
+                      updateSetup({
+                        gameMasterEnabled: !setup.gameMasterEnabled,
+                      });
+                    }
                   }}
                 />
               </div>

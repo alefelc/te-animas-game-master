@@ -1,12 +1,4 @@
-CORRECCIÓN URGENTE DEL FRONTEND v2.8.1
+Reemplazá los archivos respetando las rutas, hacé commit y ejecutá
+Deploy/Rebuild sin caché. Después borrá una vez los datos de la PWA.
 
-Opción recomendada:
-reemplazá completamente el frontend con te-animas-app-census-v2.8.1.zip.
-
-Este parche mínimo debe copiarse respetando exactamente las rutas.
-
-El Game Master queda apagado por defecto. Para habilitarlo:
-1. Publicá primero el servicio.
-2. Configurá VITE_GAME_MASTER_URL en EasyPanel.
-3. Recompilá el frontend.
-4. Activá el botón durante la configuración de la partida.
+La opción recomendada es reemplazar el frontend completo por v2.8.1.

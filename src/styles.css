@@ -677,7 +677,83 @@ h2 { font-size: 1.6rem; }
   }
 }
 
-.game-master-setup .choice-toggle:disabled {
-  cursor: not-allowed;
-  opacity: .58;
+
+.game-master-availability,
+.game-master-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.game-master-availability {
+  margin: 0 0 10px;
+  color: var(--pc-muted);
+  font-size: .78rem;
+}
+.game-master-availability > span,
+.game-master-status > span {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: #8b7f82;
+}
+.game-master-availability > span.online,
+.game-master-status.online > span {
+  background: #62dfa5;
+  box-shadow: 0 0 0 5px color-mix(in srgb, #62dfa5 12%, transparent);
+}
+.game-master-availability > span.disabled,
+.game-master-status.pending > span,
+.game-master-status.fallback > span {
+  background: #e5b45c;
+}
+.game-master-availability > span.offline,
+.game-master-status.offline > span {
+  background: var(--pc-danger);
+}
+.game-master-status {
+  width: min(100%, 520px);
+  margin: 0 auto 10px;
+  padding: 10px 13px;
+  border-radius: 13px;
+  border: 1px solid color-mix(in srgb, var(--pc-accent) 18%, transparent);
+  background: color-mix(in srgb, var(--pc-surface) 78%, transparent);
+}
+.game-master-status div {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+}
+.game-master-status b {
+  font-size: .76rem;
+}
+.game-master-status small {
+  color: var(--pc-muted);
+  font-size: .68rem;
+}
+.game-master-feedback {
+  width: min(100%, 520px);
+  margin: 12px auto 4px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--pc-accent) 20%, transparent);
+  background: color-mix(in srgb, var(--pc-surface) 88%, transparent);
+}
+.game-master-feedback-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 9px;
+}
+.game-master-feedback-heading b {
+  font-size: .82rem;
+}
+.game-master-feedback-heading span {
+  color: var(--pc-muted);
+  font-size: .67rem;
+}
+.game-master-feedback .game-master-reactions {
+  width: 100%;
+  margin: 0;
 }

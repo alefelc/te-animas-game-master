@@ -10,81 +10,17 @@ import type {
 
 const responseSchema = z.object({
   selected_card_id: z.string(),
-  phase: z.string().optional().default('flow'),
-  strategy: z.string().optional().default('adaptive'),
-  target_tension: z.coerce.number().optional().default(50),
-  target_energy: z.coerce.number().optional().default(50),
-  host_message: z.string().nullable().optional().transform((value) => value ?? ''),
-  confidence: z.coerce.number().optional().default(0),
-  provider: z.string().optional().default(''),
-  model: z.string().optional().default(''),
-  latency_ms: z.coerce.number().optional().default(0),
-  fallback_used: z.coerce.boolean().optional().default(false),
+  phase: z.string(),
+  strategy: z.string(),
+  target_tension: z.number(),
+  target_energy: z.number(),
+  host_message: z.string(),
+  confidence: z.number(),
+  provider: z.enum(['openai', 'adaptive_fallback']),
+  model: z.string(),
+  latency_ms: z.number(),
+  fallback_used: z.boolean(),
 });
-
-let availabilityValue = false;
-let availabilityCheckedAt = 0;
-let availabilityRequest: Promise<boolean> | null = null;
-const AVAILABILITY_TTL_MS = 60_000;
-
-export async function checkGameMasterAvailability(
-  force = false,
-): Promise<boolean> {
-  if (!env.gameMasterUrl) return false;
-
-  const now = Date.now();
-
-  if (
-    !force &&
-    availabilityCheckedAt &&
-    now - availabilityCheckedAt < AVAILABILITY_TTL_MS
-  ) {
-    return availabilityValue;
-  }
-
-  if (availabilityRequest) return availabilityRequest;
-
-  availabilityRequest = (async () => {
-    const controller = new AbortController();
-    const timeout = window.setTimeout(
-      () => controller.abort(),
-      2_200,
-    );
-
-    try {
-      const response = await fetch(
-        `${env.gameMasterUrl}/health`,
-        {
-          headers: { Accept: 'application/json' },
-          signal: controller.signal,
-          cache: 'no-store',
-        },
-      );
-
-      if (!response.ok) return false;
-
-      const payload = await response.json() as {
-        ok?: boolean;
-        game_master?: boolean;
-      };
-
-      return payload.ok === true &&
-        payload.game_master !== false;
-    } catch {
-      return false;
-    } finally {
-      window.clearTimeout(timeout);
-    }
-  })();
-
-  try {
-    availabilityValue = await availabilityRequest;
-    availabilityCheckedAt = Date.now();
-    return availabilityValue;
-  } finally {
-    availabilityRequest = null;
-  }
-}
 
 export type GameMasterDecision = z.infer<typeof responseSchema>;
 
@@ -157,15 +93,12 @@ export async function requestGameMasterDecision({
   candidates: Card[];
   resolvedEvent: GameMasterEvent | null;
 }): Promise<GameMasterDecision> {
-  if (!(await checkGameMasterAvailability())) {
-    throw new Error('El Game Master no está disponible.');
+  if (!env.gameMasterUrl) {
+    throw new Error('El Game Master no está configurado.');
   }
 
   const controller = new AbortController();
-  const timeout = window.setTimeout(
-    () => controller.abort(),
-    4_500,
-  );
+  const timeout = window.setTimeout(() => controller.abort(), 16_000);
 
   try {
     const response = await fetch(
