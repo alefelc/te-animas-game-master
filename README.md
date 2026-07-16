@@ -1,9 +1,3 @@
-# ¿Te animás? — dirección adaptativa API v1.3.1
+# ¿Te animás? — dirección adaptativa API v1.4.0
 
-La versión 1.3.1 limita las variables permitidas en el mensaje de ritmo y
-prohíbe respuestas con alternativas dobles de género.
-
-Debe desplegarse junto con:
-
-- frontend v2.10.1;
-- contenido v4.2.2.
+Soporta partidas para una o dos personas. En modo Solitario recibe el sexo de la persona, juguetes, elementos y cartas compatibles, y mantiene mensajes en singular.

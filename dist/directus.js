@@ -1,15 +1,15 @@
-import { config } from './config.js';
+import { config } from "./config.js";
 async function request(endpoint, init = {}) {
     const headers = new Headers(init.headers);
-    headers.set('Authorization', `Bearer ${config.directusToken}`);
-    headers.set('Accept', 'application/json');
+    headers.set("Authorization", `Bearer ${config.directusToken}`);
+    headers.set("Accept", "application/json");
     if (init.body) {
-        headers.set('Content-Type', 'application/json; charset=utf-8');
+        headers.set("Content-Type", "application/json; charset=utf-8");
     }
     const response = await fetch(`${config.directusUrl}${endpoint}`, {
         ...init,
         headers,
-        cache: 'no-store',
+        cache: "no-store",
     });
     const text = await response.text();
     const payload = text ? JSON.parse(text) : null;
@@ -30,18 +30,18 @@ const defaultSettings = {
 export async function readAiSettings(gameId) {
     try {
         const params = new URLSearchParams({
-            limit: '1',
+            limit: "1",
             fields: [
-                'enabled',
-                'model',
-                'director_prompt',
-                'candidate_limit',
-                'decision_timeout_ms',
-                'persist_events',
-                'show_host_messages',
-            ].join(','),
-            'filter[game][_eq]': gameId,
-            'filter[status][_eq]': 'published',
+                "enabled",
+                "model",
+                "director_prompt",
+                "candidate_limit",
+                "decision_timeout_ms",
+                "persist_events",
+                "show_host_messages",
+            ].join(","),
+            "filter[game][_eq]": gameId,
+            "filter[status][_eq]": "published",
         });
         const rows = await request(`/items/pc_ai_settings?${params.toString()}`);
         return {
@@ -51,20 +51,20 @@ export async function readAiSettings(gameId) {
         };
     }
     catch (error) {
-        console.warn('No se pudieron leer los ajustes de dirección adaptativa.', error);
+        console.warn("No se pudieron leer los ajustes de dirección adaptativa.", error);
         return defaultSettings;
     }
 }
 async function createIgnoringDuplicate(collection, body) {
     try {
         await request(`/items/${collection}`, {
-            method: 'POST',
+            method: "POST",
             body: JSON.stringify(body),
         });
     }
     catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (!message.includes('RECORD_NOT_UNIQUE'))
+        if (!message.includes("RECORD_NOT_UNIQUE"))
             throw error;
     }
 }
@@ -72,12 +72,12 @@ export async function persistResolvedEvent(requestBody) {
     const event = requestBody.resolved_event;
     if (!event)
         return;
-    await createIgnoringDuplicate('pc_ai_session_events', {
+    await createIgnoringDuplicate("pc_ai_session_events", {
         id: event.id,
-        status: 'published',
+        status: "published",
         game: requestBody.game_id,
         session_id: requestBody.session_id,
-        event_type: 'card_resolved',
+        event_type: "card_resolved",
         card: event.card_id,
         player_index: event.player_index,
         result: event.result,
@@ -89,10 +89,10 @@ export async function persistResolvedEvent(requestBody) {
     });
 }
 export async function persistDecision(requestBody, response) {
-    await request('/items/pc_ai_decisions', {
-        method: 'POST',
+    await request("/items/pc_ai_decisions", {
+        method: "POST",
         body: JSON.stringify({
-            status: 'published',
+            status: "published",
             game: requestBody.game_id,
             session_id: requestBody.session_id,
             selected_card: response.selected_card_id,
