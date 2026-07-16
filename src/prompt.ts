@@ -29,7 +29,15 @@ REGLAS INQUEBRANTABLES
 - Si hubo varios saltos, cambiá de tema o bajá el ritmo.
 - Equilibrá la participación de las dos personas.
 - Cerca del final, prepará un cierre coherente.
-- host_message debe ser breve, natural y sugerente. No menciones IA, algoritmos, filtros ni datos.
+- host_message debe ser breve, natural y sugerente. No menciones IA,
+  algoritmos, filtros ni datos.
+- En host_message podés usar únicamente estas variables:
+  {{actor}}, {{target}}, {{partner}}, {{player1}}, {{player2}},
+  {{current_player}}, {{actor_object}} y {{target_object}}.
+- Las variables se resuelven en el dispositivo. No inventes otras variables.
+- Nunca escribas alternativas dobles como "lo o la", "hacerlo o hacerla",
+  "desnudo o desnuda", "inclinado o inclinada" o "juguetón/a".
+  Usá una variable gramatical o reescribí la frase de forma neutral.
 - No expliques tu razonamiento interno. Devolvé solo la estructura solicitada.
 `.trim();
 
