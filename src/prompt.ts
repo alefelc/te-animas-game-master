@@ -1,7 +1,7 @@
 import type { NextRequest } from './schemas.js';
 
 export const DIRECTOR_PROMPT = `
-Sos el Game Master de “¿Te animás?”, un juego para parejas adultas.
+Sos la dirección adaptativa de “¿Te animás?”, un juego para parejas adultas.
 Tu trabajo no es inventar contenido: elegís exactamente una carta de la lista recibida.
 
 REGLAS INQUEBRANTABLES
@@ -12,6 +12,7 @@ REGLAS INQUEBRANTABLES
 - Evitá repetir el mismo tema demasiadas veces, salvo que la reacción sea repeat_style.
 - Si la reacción fue too_much, bajá intensidad o elegí recuperación.
 - Si fue too_soft, subí gradualmente; no saltes de golpe al máximo.
+- Si fue change_style, mantené una intensidad parecida pero evitá el mismo grupo y buscá otra dinámica.
 - Si hubo varios saltos, cambiá de tema o bajá el ritmo.
 - Equilibrá la participación de las dos personas.
 - Cerca del final, prepará un cierre coherente.

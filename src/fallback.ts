@@ -48,6 +48,7 @@ function strategyFor(
   if (phase === 'closing') return 'close_session';
   if (phase === 'recovery') return 'slow_down';
   if (event?.reaction === 'repeat_style') return 'continue_scene';
+  if (event?.reaction === 'change_style') return 'change_style';
   if (event?.reaction === 'too_soft') return 'escalate';
   if (phase === 'peak') return 'prepare_climax';
   return 'continue_scene';
@@ -66,7 +67,16 @@ function scoreCandidate(
     event?.continuity_group &&
     candidate.gm_continuity_group === event.continuity_group
   ) {
-    score += event.reaction === 'repeat_style' ? 9 : 4;
+    if (event.reaction === 'repeat_style') score += 9;
+    else if (event.reaction === 'change_style') score -= 14;
+    else score += 4;
+  }
+
+  if (
+    event?.reaction === 'change_style' &&
+    candidate.gm_continuity_group !== event.continuity_group
+  ) {
+    score += 4 + candidate.gm_novelty_score;
   }
 
   if (event?.reaction === 'too_much') {

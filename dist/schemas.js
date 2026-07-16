@@ -4,6 +4,7 @@ export const ReactionSchema = z.enum([
     'too_soft',
     'too_much',
     'repeat_style',
+    'change_style',
     'none',
 ]);
 export const ResultSchema = z.enum(['completed', 'skipped', 'none']);
@@ -69,6 +70,7 @@ export const StrategySchema = z.enum([
     'balance_players',
     'intimate_question',
     'humor_break',
+    'change_style',
     'prepare_climax',
     'close_session',
 ]);

@@ -4,7 +4,7 @@ const schema = z.object({
     OPENAI_MODEL: z.string().min(1).default('gpt-5.6'),
     DIRECTUS_URL: z.string().url(),
     DIRECTUS_TOKEN: z.string().min(1),
-    ALLOWED_ORIGINS: z.string().default('https://census.ar'),
+    ALLOWED_ORIGINS: z.string().default('https://teanimas.com,https://census.ar'),
     PORT: z.coerce.number().int().min(1).max(65535).default(3000),
     REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60000).default(14000),
     RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(1000).default(60),

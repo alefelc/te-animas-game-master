@@ -75,7 +75,7 @@ export async function readAiSettings(gameId: string): Promise<AiSettings> {
       model: rows[0]?.model || config.openaiModel,
     };
   } catch (error) {
-    console.warn('No se pudieron leer los ajustes del Game Master.', error);
+    console.warn('No se pudieron leer los ajustes de dirección adaptativa.', error);
     return defaultSettings;
   }
 }

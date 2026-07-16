@@ -41,6 +41,8 @@ function strategyFor(phase, event) {
         return 'slow_down';
     if (event?.reaction === 'repeat_style')
         return 'continue_scene';
+    if (event?.reaction === 'change_style')
+        return 'change_style';
     if (event?.reaction === 'too_soft')
         return 'escalate';
     if (phase === 'peak')
@@ -51,7 +53,16 @@ function scoreCandidate(candidate, request, target, phase, event) {
     let score = 20 - Math.abs(candidate.intensity - target) * 4;
     if (event?.continuity_group &&
         candidate.gm_continuity_group === event.continuity_group) {
-        score += event.reaction === 'repeat_style' ? 9 : 4;
+        if (event.reaction === 'repeat_style')
+            score += 9;
+        else if (event.reaction === 'change_style')
+            score -= 14;
+        else
+            score += 4;
+    }
+    if (event?.reaction === 'change_style' &&
+        candidate.gm_continuity_group !== event.continuity_group) {
+        score += 4 + candidate.gm_novelty_score;
     }
     if (event?.reaction === 'too_much') {
         score += candidate.gm_recovery_score * 2.2;

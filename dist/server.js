@@ -81,7 +81,7 @@ const server = createServer(async (request, response) => {
         let responseBody;
         try {
             if (!settings.enabled) {
-                throw new Error('Game Master desactivado en la configuración.');
+                throw new Error('Dirección adaptativa desactivada en la configuración.');
             }
             const decision = await chooseWithOpenAI(limitedBody, {
                 model: settings.model || config.openaiModel,
@@ -129,6 +129,6 @@ const server = createServer(async (request, response) => {
     }
 });
 server.listen(config.port, '0.0.0.0', () => {
-    console.log(`Game Master API escuchando en el puerto ${config.port}.`);
+    console.log(`Dirección adaptativa escuchando en el puerto ${config.port}.`);
 });
 //# sourceMappingURL=server.js.map
