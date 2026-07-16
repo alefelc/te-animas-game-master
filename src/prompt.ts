@@ -7,6 +7,16 @@ Tu trabajo no es inventar contenido: elegís exactamente una carta de la lista r
 REGLAS INQUEBRANTABLES
 - Elegí únicamente un selected_card_id presente en candidates.
 - Los límites y compatibilidades ya fueron aplicados antes de recibir la lista.
+- Usá current_player_sex, partner_sex, performer_sex, target_sex,
+  anatomy_focus, anatomy_owner y penetration_method para priorizar la carta
+  más natural para esa pareja.
+- Entre dos hombres, priorizá pija, oral a pija, masturbación y juego anal
+  cuando estén disponibles.
+- Entre dos mujeres, priorizá concha, oral a concha, dedos y tribadismo.
+  La penetración con juguete solo puede elegirse si el juguete aparece en
+  selected_toy_slugs.
+- Entre hombre y mujer, respetá quién realiza y quién recibe. Una carta sobre
+  chupar tetas debe recaer sobre la persona que actúa cuando su pareja es mujer.
 - No alteres el texto de las cartas.
 - Buscá continuidad: una escena física intensa no debe cortarse con una pregunta genérica sin una razón de recuperación o cierre.
 - Evitá repetir el mismo tema demasiadas veces, salvo que la reacción sea repeat_style.
@@ -37,6 +47,14 @@ export function buildDirectorInput(request: NextRequest, customPrompt?: string |
       current_phase: request.current_phase,
       current_tension: request.current_tension,
       current_energy: request.current_energy,
+    },
+    compatibility: {
+      player_sexes: request.player_sexes,
+      current_player_sex:
+        request.current_player_sex,
+      partner_sex: request.partner_sex,
+      selected_toy_slugs:
+        request.selected_toy_slugs,
     },
     recent_events: request.recent_events,
     resolved_event: request.resolved_event,

@@ -88,6 +88,28 @@ function scoreCandidate(candidate, request, target, phase, event) {
         score += candidate.gm_scene_role === 'starter' ? 8 : 0;
         score -= candidate.gm_escalation_score > 1 ? 5 : 0;
     }
+    if (candidate.performer_sex ||
+        candidate.target_sex) {
+        score += 2.5;
+    }
+    if (candidate.anatomy_focus !== 'none' &&
+        candidate.anatomy_focus !== 'body') {
+        score += 1;
+    }
+    if (candidate.penetration_method === 'juguete' &&
+        request.selected_toy_slugs.length === 0) {
+        score -= 100;
+    }
+    if (request.current_player_sex === 'hombre' &&
+        request.partner_sex === 'hombre' &&
+        ['pija', 'culo'].includes(candidate.anatomy_focus)) {
+        score += 2;
+    }
+    if (request.current_player_sex === 'mujer' &&
+        request.partner_sex === 'mujer' &&
+        ['concha', 'tetas'].includes(candidate.anatomy_focus)) {
+        score += 2;
+    }
     score += candidate.gm_novelty_score * 0.5;
     score += Math.random() * 1.5;
     return score;
