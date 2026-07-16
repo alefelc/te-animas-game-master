@@ -1,13 +1,11 @@
-# ¿Te animás? — dirección adaptativa API v1.2.0
+# Dirección adaptativa API v1.3.0
 
-La versión 1.2.0 incorpora:
+- Recibe el historial de cartas, prácticas y partes del cuerpo entre partidas.
+- Penaliza repeticiones aunque la carta exacta sea distinta.
+- “Más intenso” aumenta de forma visible el objetivo de intensidad.
+- Admite cartas de clímax con puntuación de escalada 3.
+- Prioriza cartas de niveles altos y rol `climax` cuando se pide intensidad.
+- Mantiene sexo, anatomía, turno, juguetes y método de penetración como reglas.
+- Conserva `change_style`, `repeat_style` y la recuperación por `too_much`.
 
-- sexo de la persona que tiene el turno;
-- sexo de su pareja;
-- sexo requerido para quien realiza y quien recibe;
-- anatomía principal;
-- método de penetración;
-- juguetes seleccionados;
-- prioridad para cartas específicas de cada combinación.
-
-Debe desplegarse junto al frontend v2.9.0 y el contenido v4.0.0.
+Debe desplegarse junto al frontend v2.10.0 y el contenido v4.2.0.

@@ -20,8 +20,11 @@ REGLAS INQUEBRANTABLES
 - No alteres el texto de las cartas.
 - Buscá continuidad: una escena física intensa no debe cortarse con una pregunta genérica sin una razón de recuperación o cierre.
 - Evitá repetir el mismo tema demasiadas veces, salvo que la reacción sea repeat_style.
+- Priorizá cartas que no estén en recently_seen_card_ids; usalas solo cuando no haya una alternativa razonable.
+- Evitá también las prácticas repetidas en recently_seen_groups y las anatomías dominantes de recently_seen_anatomy, salvo que la persona haya elegido Más de esto.
 - Si la reacción fue too_much, bajá intensidad o elegí recuperación.
-- Si fue too_soft, subí gradualmente; no saltes de golpe al máximo.
+- Si fue too_soft, la persona pidió un cambio claro: elegí una carta sensiblemente más intensa y de un nivel superior cuando esté disponible. Si lo pidió varias veces, podés saltar hasta dos niveles seleccionados.
+- No confundas intensidad con repetir la misma práctica: aprovechá anatomías y grupos distintos.
 - Si fue change_style, mantené una intensidad parecida pero evitá el mismo grupo y buscá otra dinámica.
 - Si hubo varios saltos, cambiá de tema o bajá el ritmo.
 - Equilibrá la participación de las dos personas.
@@ -55,6 +58,12 @@ export function buildDirectorInput(request: NextRequest, customPrompt?: string |
       partner_sex: request.partner_sex,
       selected_toy_slugs:
         request.selected_toy_slugs,
+      recently_seen_card_ids:
+        request.recently_seen_card_ids,
+      recently_seen_groups:
+        request.recently_seen_groups,
+      recently_seen_anatomy:
+        request.recently_seen_anatomy,
     },
     recent_events: request.recent_events,
     resolved_event: request.resolved_event,

@@ -8,12 +8,17 @@ function targetIntensity(request) {
     const progress = request.max_cards > 0
         ? request.resolved_count / request.max_cards
         : 0;
-    let target = 1.5 + progress * 4.8;
+    let target = 1.4 + progress * 5.2;
     const event = lastEvent(request);
-    if (event?.reaction === 'too_soft')
-        target += 1;
+    const recentIntensityRequests = request.recent_events
+        .slice(-4)
+        .filter((item) => item.reaction === 'too_soft')
+        .length;
+    if (event?.reaction === 'too_soft') {
+        target += 2.8 + Math.min(1.8, recentIntensityRequests * 0.9);
+    }
     if (event?.reaction === 'too_much')
-        target -= 1.5;
+        target -= 1.8;
     if (event?.result === 'skipped')
         target -= 0.6;
     return clamp(target, 1, 6);
@@ -69,7 +74,9 @@ function scoreCandidate(candidate, request, target, phase, event) {
         score -= Math.max(0, candidate.gm_escalation_score) * 3;
     }
     if (event?.reaction === 'too_soft') {
-        score += candidate.gm_escalation_score * 3;
+        score += candidate.gm_escalation_score * 5;
+        score += Math.max(0, candidate.intensity - (event.intensity || 0)) * 4;
+        score += candidate.gm_scene_role === 'climax' ? 5 : 0;
     }
     if (event?.result === 'skipped') {
         if (event.continuity_group &&
@@ -110,7 +117,19 @@ function scoreCandidate(candidate, request, target, phase, event) {
         ['concha', 'tetas'].includes(candidate.anatomy_focus)) {
         score += 2;
     }
-    score += candidate.gm_novelty_score * 0.5;
+    if ((request.recently_seen_card_ids ?? []).includes(candidate.id)) {
+        score -= 28;
+    }
+    if (event?.reaction !== 'repeat_style') {
+        const repeatedGroup = (request.recently_seen_groups ?? []).filter((group) => group && group === candidate.gm_continuity_group).length;
+        const repeatedAnatomy = (request.recently_seen_anatomy ?? []).filter((anatomy) => anatomy && anatomy === candidate.anatomy_focus).length;
+        score -= Math.min(18, repeatedGroup * 2.2);
+        if (candidate.anatomy_focus !== 'none' &&
+            candidate.anatomy_focus !== 'body') {
+            score -= Math.min(9, repeatedAnatomy * 0.9);
+        }
+    }
+    score += candidate.gm_novelty_score * 0.8;
     score += Math.random() * 1.5;
     return score;
 }
