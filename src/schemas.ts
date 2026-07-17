@@ -1,5 +1,34 @@
 import { z } from "zod";
 
+function normalizeFivePointScore(value: number): number {
+  if (value <= 5) return Math.max(0, value);
+  return Math.min(5, Math.max(1, Math.ceil(value / 2)));
+}
+
+function normalizeEscalationScore(value: number): number {
+  if (value <= 3) return Math.max(-2, value);
+  return Math.min(3, Math.max(-2, Math.round(value / 3)));
+}
+
+const fivePointScore = (defaultValue: number) =>
+  z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(10)
+    .optional()
+    .default(defaultValue)
+    .transform(normalizeFivePointScore);
+
+const escalationScore = z.coerce
+  .number()
+  .int()
+  .min(-10)
+  .max(10)
+  .optional()
+  .default(0)
+  .transform(normalizeEscalationScore);
+
 export const ReactionSchema = z.enum([
   "liked",
   "too_soft",
@@ -32,12 +61,12 @@ export const CandidateSchema = z.object({
     .default("none"),
   reciprocal_action: z.boolean().optional().default(false),
   tags: z.array(z.string()).max(30).optional().default([]),
-  gm_escalation_score: z.number().int().min(-2).max(3).optional().default(0),
-  gm_energy_score: z.number().int().min(1).max(5).optional().default(2),
-  gm_intimacy_score: z.number().int().min(1).max(5).optional().default(2),
-  gm_humor_score: z.number().int().min(0).max(5).optional().default(0),
-  gm_recovery_score: z.number().int().min(0).max(5).optional().default(1),
-  gm_novelty_score: z.number().int().min(1).max(5).optional().default(2),
+  gm_escalation_score: escalationScore,
+  gm_energy_score: fivePointScore(2),
+  gm_intimacy_score: fivePointScore(2),
+  gm_humor_score: fivePointScore(0),
+  gm_recovery_score: fivePointScore(1),
+  gm_novelty_score: fivePointScore(2),
   gm_continuity_group: z.string().nullable().optional().default(null),
   gm_scene_role: z
     .enum(["starter", "bridge", "continuation", "climax", "recovery", "closer"])

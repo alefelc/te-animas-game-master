@@ -1,4 +1,4 @@
-# ¿Te animás? — Dirección adaptativa 1.8.1
+# ¿Te animás? — Dirección adaptativa 1.8.2
 
 API Node.js que selecciona la próxima carta con OpenAI y conserva un selector adaptativo local como recuperación controlada.
 

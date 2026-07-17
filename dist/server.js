@@ -4,12 +4,48 @@ import { ZodError } from "zod";
 import { config } from "./config.js";
 import { chooseFallback } from "./fallback.js";
 import { chooseWithOpenAI, probeOpenAIModel, } from "./openai-director.js";
-import { NextRequestSchema, NextResponseSchema, } from "./schemas.js";
+import { CandidateSchema, NextRequestSchema, NextResponseSchema, } from "./schemas.js";
 import { checkDirectusReady, diagnoseAiSettings, persistDecision, persistResolvedEvent, readAiSettings, } from "./directus.js";
 import { SlidingMinuteLimiter } from "./rate-limit.js";
-const API_VERSION = "1.8.1";
+const API_VERSION = "1.8.2";
 const limiter = new SlidingMinuteLimiter(config.rateLimitPerMinute);
 const MAX_ATTEMPT_HISTORY = 20;
+const MAX_VALIDATION_HISTORY = 20;
+const recentValidationFailures = [];
+function requestShapeSummary(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return { top_level_keys: [], candidate_count: null, score_sample: null };
+    }
+    const record = value;
+    const candidates = Array.isArray(record.candidates) ? record.candidates : null;
+    const first = candidates?.[0];
+    const firstRecord = first && typeof first === "object" && !Array.isArray(first)
+        ? first
+        : null;
+    return {
+        top_level_keys: Object.keys(record).sort(),
+        candidate_count: candidates?.length ?? null,
+        score_sample: firstRecord
+            ? {
+                gm_escalation_score: firstRecord.gm_escalation_score ?? null,
+                gm_energy_score: firstRecord.gm_energy_score ?? null,
+                gm_intimacy_score: firstRecord.gm_intimacy_score ?? null,
+                gm_humor_score: firstRecord.gm_humor_score ?? null,
+                gm_recovery_score: firstRecord.gm_recovery_score ?? null,
+                gm_novelty_score: firstRecord.gm_novelty_score ?? null,
+            }
+            : null,
+    };
+}
+function recordValidationFailure(requestId, error, rawBody) {
+    recentValidationFailures.unshift({
+        request_id: requestId,
+        at: new Date().toISOString(),
+        issues: validationIssues(error),
+        ...requestShapeSummary(rawBody),
+    });
+    recentValidationFailures.splice(MAX_VALIDATION_HISTORY);
+}
 const emptyAiAttempt = () => ({
     state: "never",
     at: null,
@@ -281,7 +317,7 @@ const server = createServer(async (request, response) => {
             game_master: true,
             version: API_VERSION,
             api_version: API_VERSION,
-            request_contract: "v4-compatible",
+            request_contract: "v5-score-normalized",
             openai_configured: Boolean(config.openaiApiKey),
             primary_model: config.openaiModel,
             fallback_model: config.openaiFallbackModel,
@@ -303,6 +339,64 @@ const server = createServer(async (request, response) => {
             last_ai_attempt: lastAiAttempt,
             recent_summary: recentSummary,
             recent_ai_attempts: attemptHistory.slice(0, MAX_ATTEMPT_HISTORY),
+        });
+    }
+    if (request.method === "GET" && requestUrl.pathname === "/diagnostics/contract") {
+        if (!config.diagnosticToken) {
+            return json(response, 503, {
+                ok: false,
+                code: "DIAGNOSTICS_DISABLED",
+                error: "DIAGNOSTIC_TOKEN no está configurado en el servicio.",
+                request_id: requestId,
+                api_version: API_VERSION,
+            });
+        }
+        if (!diagnosticAuthorized(request)) {
+            return json(response, 401, {
+                ok: false,
+                code: "DIAGNOSTICS_UNAUTHORIZED",
+                error: "Token de diagnóstico incorrecto o ausente.",
+                request_id: requestId,
+                api_version: API_VERSION,
+            });
+        }
+        const requestedFailureId = requestUrl.searchParams.get("request_id");
+        const selectedFailure = requestedFailureId
+            ? recentValidationFailures.find((failure) => failure.request_id === requestedFailureId) ?? null
+            : recentValidationFailures[0] ?? null;
+        const normalizedExample = CandidateSchema.parse({
+            id: "diagnostic-card",
+            code: "DIAG-001",
+            text: "Carta de diagnóstico del contrato.",
+            intensity: 7,
+            gm_escalation_score: 9,
+            gm_energy_score: 9,
+            gm_intimacy_score: 8,
+            gm_humor_score: 0,
+            gm_recovery_score: 5,
+            gm_novelty_score: 5,
+        });
+        return json(response, 200, {
+            ok: true,
+            api_version: API_VERSION,
+            request_id: requestId,
+            request_contract: "v5-score-normalized",
+            accepted_input_ranges: {
+                gm_escalation_score: [-10, 10],
+                gm_energy_score: [0, 10],
+                gm_intimacy_score: [0, 10],
+                gm_humor_score: [0, 10],
+                gm_recovery_score: [0, 10],
+                gm_novelty_score: [0, 10],
+            },
+            normalized_example: {
+                gm_escalation_score: normalizedExample.gm_escalation_score,
+                gm_energy_score: normalizedExample.gm_energy_score,
+                gm_intimacy_score: normalizedExample.gm_intimacy_score,
+            },
+            requested_failure_id: requestedFailureId,
+            validation_failure: selectedFailure,
+            recent_validation_failures: recentValidationFailures.slice(0, 5),
         });
     }
     if (request.method === "GET" && requestUrl.pathname === "/diagnostics/ai") {
@@ -473,8 +567,10 @@ const server = createServer(async (request, response) => {
         });
     }
     const startedAt = Date.now();
+    let rawRequestBody = null;
     try {
-        const body = NextRequestSchema.parse(await readBody(request));
+        rawRequestBody = await readBody(request);
+        const body = NextRequestSchema.parse(rawRequestBody);
         const settings = await readAiSettings(body.game_id);
         const limitedBody = {
             ...body,
@@ -601,10 +697,14 @@ const server = createServer(async (request, response) => {
     catch (error) {
         console.error(`[${requestId}]`, error);
         if (error instanceof ZodError) {
+            const issues = validationIssues(error);
+            recordValidationFailure(requestId, error, rawRequestBody);
             return json(response, 422, {
                 error: "La solicitud no coincide con el contrato de la dirección adaptativa.",
                 code: "INVALID_REQUEST",
-                issues: validationIssues(error),
+                contract_version: "v5-score-normalized",
+                issues,
+                request_summary: requestShapeSummary(rawRequestBody),
                 request_id: requestId,
             });
         }
