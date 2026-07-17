@@ -16,13 +16,14 @@ import {
   type NextResponse,
 } from "./schemas.js";
 import {
+  checkDirectusReady,
   persistDecision,
   persistResolvedEvent,
   readAiSettings,
 } from "./directus.js";
 import { SlidingMinuteLimiter } from "./rate-limit.js";
 
-const API_VERSION = "1.6.0";
+const API_VERSION = "1.7.0";
 const limiter = new SlidingMinuteLimiter(config.rateLimitPerMinute);
 const MAX_ATTEMPT_HISTORY = 20;
 
@@ -361,10 +362,23 @@ const server = createServer(async (request, response) => {
     ).length,
   };
 
+  if (request.method === "GET" && requestUrl.pathname === "/ready") {
+    const directus = await checkDirectusReady();
+    return json(response, directus.ok ? 200 : 503, {
+      ok: directus.ok,
+      ready: directus.ok,
+      version: API_VERSION,
+      api_version: API_VERSION,
+      openai_configured: Boolean(config.openaiApiKey),
+      directus,
+    });
+  }
+
   if (request.method === "GET" && requestUrl.pathname === "/health") {
     return json(response, 200, {
       ok: true,
       game_master: true,
+      version: API_VERSION,
       api_version: API_VERSION,
       request_contract: "v4-compatible",
       openai_configured: Boolean(config.openaiApiKey),
@@ -627,3 +641,18 @@ server.listen(config.port, "0.0.0.0", () => {
     `Dirección adaptativa ${API_VERSION} escuchando en el puerto ${config.port}.`,
   );
 });
+
+function shutdown(signal: string) {
+  console.log(`${signal}: cerrando el servicio adaptativo.`);
+  server.close((error) => {
+    if (error) {
+      console.error("No se pudo cerrar el servidor limpiamente.", error);
+      process.exitCode = 1;
+    }
+    process.exit();
+  });
+  setTimeout(() => process.exit(1), 10_000).unref();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

@@ -20,7 +20,12 @@ async function request<T>(
   });
 
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : null;
+  let payload: unknown = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = text;
+  }
 
   if (!response.ok) {
     throw new Error(
@@ -28,7 +33,32 @@ async function request<T>(
     );
   }
 
-  return (payload?.data ?? payload) as T;
+  const wrapped = payload as { data?: unknown } | null;
+  return (wrapped && typeof wrapped === "object" && "data" in wrapped
+    ? wrapped.data
+    : payload) as T;
+}
+
+export interface DirectusReadiness {
+  ok: boolean;
+  latency_ms: number;
+  reason: string | null;
+}
+
+export async function checkDirectusReady(): Promise<DirectusReadiness> {
+  const startedAt = Date.now();
+  try {
+    await request<{ id: string }>("/users/me?fields=id", {
+      signal: AbortSignal.timeout(5_000),
+    });
+    return { ok: true, latency_ms: Date.now() - startedAt, reason: null };
+  } catch (error) {
+    return {
+      ok: false,
+      latency_ms: Date.now() - startedAt,
+      reason: error instanceof Error ? error.message.slice(0, 300) : String(error),
+    };
+  }
 }
 
 export interface AiSettings {

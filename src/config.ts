@@ -6,7 +6,11 @@ const schema = z.object({
   OPENAI_FALLBACK_MODEL: z.string().min(1).default("gpt-5.2"),
   DIRECTUS_URL: z.string().url(),
   DIRECTUS_TOKEN: z.string().min(1),
-  ALLOWED_ORIGINS: z.string().default("https://teanimas.com,https://census.ar"),
+  ALLOWED_ORIGINS: z
+    .string()
+    .default(
+      "https://teanimas.com,https://www.teanimas.com,https://census.ar,https://www.census.ar,http://localhost:5173",
+    ),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   REQUEST_TIMEOUT_MS: z.coerce
     .number()

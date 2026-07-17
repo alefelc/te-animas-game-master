@@ -12,11 +12,36 @@ async function request(endpoint, init = {}) {
         cache: "no-store",
     });
     const text = await response.text();
-    const payload = text ? JSON.parse(text) : null;
+    let payload = null;
+    try {
+        payload = text ? JSON.parse(text) : null;
+    }
+    catch {
+        payload = text;
+    }
     if (!response.ok) {
         throw new Error(`Directus ${response.status}: ${JSON.stringify(payload).slice(0, 500)}`);
     }
-    return (payload?.data ?? payload);
+    const wrapped = payload;
+    return (wrapped && typeof wrapped === "object" && "data" in wrapped
+        ? wrapped.data
+        : payload);
+}
+export async function checkDirectusReady() {
+    const startedAt = Date.now();
+    try {
+        await request("/users/me?fields=id", {
+            signal: AbortSignal.timeout(5_000),
+        });
+        return { ok: true, latency_ms: Date.now() - startedAt, reason: null };
+    }
+    catch (error) {
+        return {
+            ok: false,
+            latency_ms: Date.now() - startedAt,
+            reason: error instanceof Error ? error.message.slice(0, 300) : String(error),
+        };
+    }
 }
 const defaultSettings = {
     enabled: true,
