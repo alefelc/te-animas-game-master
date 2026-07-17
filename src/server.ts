@@ -78,14 +78,36 @@ function errorStatus(error: unknown): number | null {
 
 function shouldTryFallbackModel(error: unknown): boolean {
   const status = errorStatus(error);
-  if (status === 400 || status === 403 || status === 404) return true;
+
+  // Una credencial inválida afectará a ambos modelos; no se duplica la espera.
+  if (status === 401) return false;
+
+  // Errores de modelo, saturación, red o servidor sí justifican probar otra IA.
+  if (
+    status === 400 ||
+    status === 403 ||
+    status === 404 ||
+    status === 408 ||
+    status === 409 ||
+    status === 429 ||
+    (status !== null && status >= 500)
+  ) {
+    return true;
+  }
 
   const message = error instanceof Error ? error.message.toLowerCase() : "";
   return (
+    status === null ||
     message.includes("model") ||
     message.includes("not found") ||
     message.includes("unsupported") ||
-    message.includes("does not exist")
+    message.includes("does not exist") ||
+    message.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("abort") ||
+    message.includes("network") ||
+    message.includes("connection") ||
+    message.includes("fetch")
   );
 }
 
@@ -121,11 +143,12 @@ const server = createServer(async (request, response) => {
     return json(response, 200, {
       ok: true,
       game_master: true,
-      api_version: "1.5.0",
+      api_version: "1.5.1",
       request_contract: "v4-compatible",
       openai_configured: Boolean(config.openaiApiKey),
       primary_model: config.openaiModel,
       fallback_model: config.openaiFallbackModel,
+      request_timeout_ms: config.requestTimeoutMs,
     });
   }
 
@@ -164,9 +187,9 @@ const server = createServer(async (request, response) => {
 
       const preferredModel = (settings.model || config.openaiModel).trim();
       const fallbackModel = config.openaiFallbackModel.trim();
-      const timeoutMs = Math.min(
+      const timeoutMs = Math.max(
         settings.decision_timeout_ms || config.requestTimeoutMs,
-        12_000,
+        config.requestTimeoutMs,
       );
       let usedModel = preferredModel;
       let decision;
