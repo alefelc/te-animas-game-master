@@ -124,6 +124,8 @@ export const NextResponseSchema = ModelDecisionSchema.extend({
   model: z.string(),
   latency_ms: z.number().int().min(0),
   fallback_used: z.boolean(),
+  fallback_code: z.string().nullable().optional().default(null),
+  fallback_reason: z.string().max(500).nullable().optional().default(null),
 });
 
 export type Candidate = z.infer<typeof CandidateSchema>;
