@@ -2,7 +2,7 @@ import { z } from "zod";
 
 const schema = z.object({
   OPENAI_API_KEY: z.string().optional().default(""),
-  OPENAI_MODEL: z.string().min(1).default("gpt-5.6"),
+  OPENAI_MODEL: z.string().min(1).default("gpt-5.2"),
   DIRECTUS_URL: z.string().url(),
   DIRECTUS_TOKEN: z.string().min(1),
   ALLOWED_ORIGINS: z.string().default("https://teanimas.com,https://census.ar"),
