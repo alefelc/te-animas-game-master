@@ -19,7 +19,7 @@ RUN npm run build \
 
 FROM node:22-alpine AS runtime
 LABEL org.opencontainers.image.title="te-animas-adaptive-api" \
-      org.opencontainers.image.version="1.8.2"
+      org.opencontainers.image.version="1.8.3"
 WORKDIR /app
 ENV NODE_ENV=production
 

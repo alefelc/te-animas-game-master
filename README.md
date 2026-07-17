@@ -1,4 +1,4 @@
-# ¿Te animás? — Dirección adaptativa 1.8.2
+# ¿Te animás? — Dirección adaptativa 1.8.3
 
 API Node.js que selecciona la próxima carta con OpenAI y conserva un selector adaptativo local como recuperación controlada.
 
@@ -33,3 +33,19 @@ La interfaz web de GitHub no elimina archivos antiguos. Esta revisión compila s
 Antes de publicar también puede ejecutarse `VALIDAR-BUILD-API.ps1` en Windows.
 
 Las credenciales (`OPENAI_API_KEY`, `DIRECTUS_TOKEN`, etc.) deben configurarse como variables de ejecución del servicio, nunca como argumentos de compilación del Dockerfile.
+
+## Contrato 1.8.3
+
+El contrato `v6-scene-role-normalized` no rechaza una solicitud por valores históricos o personalizados de `gm_scene_role`. Los alias se convierten y los valores desconocidos se infieren a partir del nivel, intensidad y puntajes de la carta.
+
+El endpoint protegido `GET /diagnostics/contract` informa:
+
+```json
+{
+  "request_contract": "v6-scene-role-normalized",
+  "scene_role_contract": {
+    "accepts_legacy_aliases": true,
+    "accepts_unknown_values": true
+  }
+}
+```

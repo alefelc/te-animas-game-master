@@ -7,7 +7,7 @@ import { chooseWithOpenAI, probeOpenAIModel, } from "./openai-director.js";
 import { CandidateSchema, NextRequestSchema, NextResponseSchema, } from "./schemas.js";
 import { checkDirectusReady, diagnoseAiSettings, persistDecision, persistResolvedEvent, readAiSettings, } from "./directus.js";
 import { SlidingMinuteLimiter } from "./rate-limit.js";
-const API_VERSION = "1.8.2";
+const API_VERSION = "1.8.3";
 const limiter = new SlidingMinuteLimiter(config.rateLimitPerMinute);
 const MAX_ATTEMPT_HISTORY = 20;
 const MAX_VALIDATION_HISTORY = 20;
@@ -33,6 +33,7 @@ function requestShapeSummary(value) {
                 gm_humor_score: firstRecord.gm_humor_score ?? null,
                 gm_recovery_score: firstRecord.gm_recovery_score ?? null,
                 gm_novelty_score: firstRecord.gm_novelty_score ?? null,
+                gm_scene_role: firstRecord.gm_scene_role ?? null,
             }
             : null,
     };
@@ -317,7 +318,7 @@ const server = createServer(async (request, response) => {
             game_master: true,
             version: API_VERSION,
             api_version: API_VERSION,
-            request_contract: "v5-score-normalized",
+            request_contract: "v6-scene-role-normalized",
             openai_configured: Boolean(config.openaiApiKey),
             primary_model: config.openaiModel,
             fallback_model: config.openaiFallbackModel,
@@ -375,12 +376,13 @@ const server = createServer(async (request, response) => {
             gm_humor_score: 0,
             gm_recovery_score: 5,
             gm_novelty_score: 5,
+            gm_scene_role: "escalation",
         });
         return json(response, 200, {
             ok: true,
             api_version: API_VERSION,
             request_id: requestId,
-            request_contract: "v5-score-normalized",
+            request_contract: "v6-scene-role-normalized",
             accepted_input_ranges: {
                 gm_escalation_score: [-10, 10],
                 gm_energy_score: [0, 10],
@@ -393,6 +395,21 @@ const server = createServer(async (request, response) => {
                 gm_escalation_score: normalizedExample.gm_escalation_score,
                 gm_energy_score: normalizedExample.gm_energy_score,
                 gm_intimacy_score: normalizedExample.gm_intimacy_score,
+                gm_scene_role_input: "escalation",
+                gm_scene_role: normalizedExample.gm_scene_role,
+            },
+            scene_role_contract: {
+                canonical_roles: [
+                    "starter",
+                    "bridge",
+                    "continuation",
+                    "climax",
+                    "recovery",
+                    "closer",
+                ],
+                accepts_legacy_aliases: true,
+                accepts_unknown_values: true,
+                unknown_value_policy: "infer_from_level_intensity_and_scores",
             },
             requested_failure_id: requestedFailureId,
             validation_failure: selectedFailure,
@@ -702,7 +719,7 @@ const server = createServer(async (request, response) => {
             return json(response, 422, {
                 error: "La solicitud no coincide con el contrato de la dirección adaptativa.",
                 code: "INVALID_REQUEST",
-                contract_version: "v5-score-normalized",
+                contract_version: "v6-scene-role-normalized",
                 issues,
                 request_summary: requestShapeSummary(rawRequestBody),
                 request_id: requestId,
