@@ -69,6 +69,25 @@ function clientKey(request: IncomingMessage) {
   );
 }
 
+function errorStatus(error: unknown): number | null {
+  if (!error || typeof error !== "object" || !("status" in error)) return null;
+  const status = (error as { status?: unknown }).status;
+  return typeof status === "number" ? status : null;
+}
+
+function shouldTryFallbackModel(error: unknown): boolean {
+  const status = errorStatus(error);
+  if (status === 400 || status === 403 || status === 404) return true;
+
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  return (
+    message.includes("model") ||
+    message.includes("not found") ||
+    message.includes("unsupported") ||
+    message.includes("does not exist")
+  );
+}
+
 const server = createServer(async (request, response) => {
   const requestId = randomUUID();
   const origin =
@@ -95,6 +114,8 @@ const server = createServer(async (request, response) => {
       ok: true,
       game_master: true,
       openai_configured: Boolean(config.openaiApiKey),
+      primary_model: config.openaiModel,
+      fallback_model: config.openaiFallbackModel,
     });
   }
 
@@ -131,11 +152,40 @@ const server = createServer(async (request, response) => {
         );
       }
 
-      const decision = await chooseWithOpenAI(limitedBody, {
-        model: settings.model || config.openaiModel,
-        timeoutMs: settings.decision_timeout_ms || config.requestTimeoutMs,
-        customPrompt: settings.director_prompt,
-      });
+      const preferredModel = (settings.model || config.openaiModel).trim();
+      const fallbackModel = config.openaiFallbackModel.trim();
+      const timeoutMs = Math.min(
+        settings.decision_timeout_ms || config.requestTimeoutMs,
+        12_000,
+      );
+      let usedModel = preferredModel;
+      let decision;
+
+      try {
+        decision = await chooseWithOpenAI(limitedBody, {
+          model: preferredModel,
+          timeoutMs,
+          customPrompt: settings.director_prompt,
+        });
+      } catch (primaryError) {
+        if (
+          fallbackModel === preferredModel ||
+          !shouldTryFallbackModel(primaryError)
+        ) {
+          throw primaryError;
+        }
+
+        console.warn(
+          `[${requestId}] El modelo ${preferredModel} falló; se prueba ${fallbackModel}.`,
+          primaryError,
+        );
+        usedModel = fallbackModel;
+        decision = await chooseWithOpenAI(limitedBody, {
+          model: fallbackModel,
+          timeoutMs,
+          customPrompt: settings.director_prompt,
+        });
+      }
 
       if (
         !limitedBody.candidates.some(
@@ -149,7 +199,7 @@ const server = createServer(async (request, response) => {
         ...decision,
         host_message: settings.show_host_messages ? decision.host_message : "",
         provider: "openai",
-        model: settings.model || config.openaiModel,
+        model: usedModel,
         latency_ms: Date.now() - startedAt,
         fallback_used: false,
       });
