@@ -1,4 +1,0 @@
-Reemplazá los archivos respetando las rutas, hacé commit y ejecutá
-Deploy/Rebuild sin caché. Después borrá una vez los datos de la PWA.
-
-La opción recomendada es reemplazar el frontend completo por v2.8.1.
