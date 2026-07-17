@@ -4,6 +4,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import { randomUUID } from "node:crypto";
+import { ZodError } from "zod";
 import { config } from "./config.js";
 import { chooseFallback } from "./fallback.js";
 import { chooseWithOpenAI } from "./openai-director.js";
@@ -88,6 +89,13 @@ function shouldTryFallbackModel(error: unknown): boolean {
   );
 }
 
+function validationIssues(error: ZodError) {
+  return error.issues.slice(0, 20).map((issue) => ({
+    field: issue.path.length ? issue.path.map(String).join(".") : "request",
+    message: issue.message,
+  }));
+}
+
 const server = createServer(async (request, response) => {
   const requestId = randomUUID();
   const origin =
@@ -113,6 +121,8 @@ const server = createServer(async (request, response) => {
     return json(response, 200, {
       ok: true,
       game_master: true,
+      api_version: "1.5.0",
+      request_contract: "v4-compatible",
       openai_configured: Boolean(config.openaiApiKey),
       primary_model: config.openaiModel,
       fallback_model: config.openaiFallbackModel,
@@ -227,8 +237,27 @@ const server = createServer(async (request, response) => {
     return json(response, 200, responseBody);
   } catch (error) {
     console.error(`[${requestId}]`, error);
-    return json(response, 400, {
+
+    if (error instanceof ZodError) {
+      return json(response, 422, {
+        error: "La solicitud no coincide con el contrato de la dirección adaptativa.",
+        code: "INVALID_REQUEST",
+        issues: validationIssues(error),
+        request_id: requestId,
+      });
+    }
+
+    if (error instanceof SyntaxError) {
+      return json(response, 400, {
+        error: "El cuerpo de la solicitud no contiene JSON válido.",
+        code: "INVALID_JSON",
+        request_id: requestId,
+      });
+    }
+
+    return json(response, 500, {
       error: "No se pudo preparar la próxima carta.",
+      code: "INTERNAL_ERROR",
       request_id: requestId,
     });
   }
