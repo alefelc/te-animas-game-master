@@ -16,7 +16,7 @@
       "node"
     ]
   },
-  "include": [
-    "src/**/*.ts"
+  "files": [
+    "src/server.ts"
   ]
 }
