@@ -117,5 +117,7 @@ export const NextResponseSchema = ModelDecisionSchema.extend({
     fallback_used: z.boolean(),
     fallback_code: z.string().nullable().optional().default(null),
     fallback_reason: z.string().max(500).nullable().optional().default(null),
+    request_id: z.string().nullable().optional().default(null),
+    api_version: z.string().nullable().optional().default(null),
 });
 //# sourceMappingURL=schemas.js.map

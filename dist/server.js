@@ -3,11 +3,11 @@ import { randomUUID } from "node:crypto";
 import { ZodError } from "zod";
 import { config } from "./config.js";
 import { chooseFallback } from "./fallback.js";
-import { chooseWithOpenAI } from "./openai-director.js";
+import { chooseWithOpenAI, probeOpenAIModel, } from "./openai-director.js";
 import { NextRequestSchema, NextResponseSchema, } from "./schemas.js";
-import { checkDirectusReady, persistDecision, persistResolvedEvent, readAiSettings, } from "./directus.js";
+import { checkDirectusReady, diagnoseAiSettings, persistDecision, persistResolvedEvent, readAiSettings, } from "./directus.js";
 import { SlidingMinuteLimiter } from "./rate-limit.js";
-const API_VERSION = "1.7.0";
+const API_VERSION = "1.8.0";
 const limiter = new SlidingMinuteLimiter(config.rateLimitPerMinute);
 const MAX_ATTEMPT_HISTORY = 20;
 const emptyAiAttempt = () => ({
@@ -56,7 +56,8 @@ function setCors(response, origin) {
     }
     response.setHeader("Vary", "Origin");
     response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    response.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Game-Session, X-Game-Draw");
+    response.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Game-Session, X-Game-Draw, X-Diagnostic-Token, Authorization");
+    response.setHeader("Access-Control-Expose-Headers", "X-Request-ID, X-Game-Master-Version");
     response.setHeader("Access-Control-Max-Age", "600");
 }
 function json(response, status, payload) {
@@ -86,6 +87,21 @@ function headerValue(request, name) {
     const value = request.headers[name];
     return Array.isArray(value) ? value[0] : value;
 }
+function diagnosticAuthorized(request) {
+    if (!config.diagnosticToken)
+        return false;
+    const direct = headerValue(request, "x-diagnostic-token");
+    const authorization = headerValue(request, "authorization");
+    const bearer = authorization?.startsWith("Bearer ")
+        ? authorization.slice(7).trim()
+        : null;
+    return direct === config.diagnosticToken || bearer === config.diagnosticToken;
+}
+function diagnosticModels(configuredModel) {
+    return [configuredModel, config.openaiModel, config.openaiFallbackModel]
+        .map((value) => String(value || "").trim())
+        .filter((value, index, values) => value && values.indexOf(value) === index);
+}
 function errorStatus(error) {
     if (!error || typeof error !== "object" || !("status" in error))
         return null;
@@ -102,6 +118,10 @@ function classifyAiFailure(error) {
     const lower = reason.toLowerCase();
     if (error instanceof AiDisabledError || lower.includes("desactivada")) {
         return { code: "AI_DISABLED", reason, status };
+    }
+    if (lower.includes("openai_api_key") ||
+        lower.includes("api key") && lower.includes("configur")) {
+        return { code: "OPENAI_CONFIG", reason, status };
     }
     if (error instanceof InvalidModelSelectionError) {
         return { code: "OPENAI_SELECTION", reason, status };
@@ -223,6 +243,8 @@ const server = createServer(async (request, response) => {
         : undefined;
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
     setCors(response, origin);
+    response.setHeader("X-Request-ID", requestId);
+    response.setHeader("X-Game-Master-Version", API_VERSION);
     if (!originAllowed(origin)) {
         return json(response, 403, {
             error: "Origen no permitido.",
@@ -264,6 +286,8 @@ const server = createServer(async (request, response) => {
             primary_model: config.openaiModel,
             fallback_model: config.openaiFallbackModel,
             request_timeout_ms: config.requestTimeoutMs,
+            diagnostics_enabled: Boolean(config.diagnosticToken),
+            allowed_origins: [...config.allowedOrigins],
             last_ai_attempt: lastAiAttempt,
             recent_summary: recentSummary,
         });
@@ -279,6 +303,142 @@ const server = createServer(async (request, response) => {
             last_ai_attempt: lastAiAttempt,
             recent_summary: recentSummary,
             recent_ai_attempts: attemptHistory.slice(0, MAX_ATTEMPT_HISTORY),
+        });
+    }
+    if (request.method === "GET" && requestUrl.pathname === "/diagnostics/ai") {
+        if (!config.diagnosticToken) {
+            return json(response, 503, {
+                ok: false,
+                code: "DIAGNOSTICS_DISABLED",
+                error: "DIAGNOSTIC_TOKEN no está configurado en el servicio.",
+                request_id: requestId,
+                api_version: API_VERSION,
+            });
+        }
+        if (!diagnosticAuthorized(request)) {
+            return json(response, 401, {
+                ok: false,
+                code: "DIAGNOSTICS_UNAUTHORIZED",
+                error: "Token de diagnóstico incorrecto o ausente.",
+                request_id: requestId,
+                api_version: API_VERSION,
+            });
+        }
+        return json(response, 200, {
+            ok: true,
+            active_probe_required: true,
+            endpoint: "/diagnostics/ai",
+            method: "POST",
+            api_version: API_VERSION,
+            request_id: requestId,
+            configuration: {
+                openai_configured: Boolean(config.openaiApiKey),
+                primary_model: config.openaiModel,
+                fallback_model: config.openaiFallbackModel,
+                directus_url: config.directusUrl,
+                request_timeout_ms: config.requestTimeoutMs,
+                allowed_origins: [...config.allowedOrigins],
+            },
+        });
+    }
+    if (request.method === "POST" && requestUrl.pathname === "/diagnostics/ai") {
+        if (!config.diagnosticToken) {
+            return json(response, 503, {
+                ok: false,
+                code: "DIAGNOSTICS_DISABLED",
+                error: "DIAGNOSTIC_TOKEN no está configurado en el servicio.",
+                request_id: requestId,
+                api_version: API_VERSION,
+            });
+        }
+        if (!diagnosticAuthorized(request)) {
+            return json(response, 401, {
+                ok: false,
+                code: "DIAGNOSTICS_UNAUTHORIZED",
+                error: "Token de diagnóstico incorrecto o ausente.",
+                request_id: requestId,
+                api_version: API_VERSION,
+            });
+        }
+        let diagnosticBody = {};
+        try {
+            diagnosticBody = (await readBody(request, 50_000));
+        }
+        catch (error) {
+            return json(response, 400, {
+                ok: false,
+                code: "INVALID_DIAGNOSTIC_REQUEST",
+                error: safeErrorMessage(error),
+                request_id: requestId,
+                api_version: API_VERSION,
+            });
+        }
+        const directus = await checkDirectusReady();
+        const aiSettings = await diagnoseAiSettings(diagnosticBody.game_id || null);
+        const configuredModel = aiSettings.settings?.model || config.openaiModel;
+        const models = diagnosticModels(configuredModel);
+        const modelTests = [];
+        let successfulModel = null;
+        for (const model of models) {
+            const started = Date.now();
+            try {
+                const result = await probeOpenAIModel(model, config.requestTimeoutMs);
+                modelTests.push({ ...result, code: null, reason: null, status: null });
+                successfulModel = model;
+                break;
+            }
+            catch (error) {
+                const failure = classifyAiFailure(error);
+                modelTests.push({
+                    ok: false,
+                    model,
+                    latency_ms: Date.now() - started,
+                    code: failure.code,
+                    reason: failure.reason,
+                    status: failure.status,
+                });
+            }
+        }
+        const testedOrigin = String(diagnosticBody.origin || origin || "").replace(/\/+$/, "");
+        const originCheck = {
+            supplied: testedOrigin || null,
+            allowed: testedOrigin ? config.allowedOrigins.has(testedOrigin) : null,
+        };
+        const aiEnabled = !aiSettings.found || aiSettings.settings?.enabled !== false;
+        const ok = Boolean(successfulModel) && directus.ok && aiSettings.ok && aiEnabled;
+        return json(response, ok ? 200 : 503, {
+            ok,
+            api_version: API_VERSION,
+            request_id: requestId,
+            checked_at: new Date().toISOString(),
+            summary: !aiEnabled
+                ? "La conexión existe, pero la IA está desactivada en pc_ai_settings."
+                : successfulModel
+                    ? directus.ok && aiSettings.ok
+                        ? "La API, el catálogo y OpenAI respondieron correctamente."
+                        : "OpenAI respondió, pero hay un problema en la conexión o configuración del catálogo."
+                    : "La API está accesible, pero ningún modelo de OpenAI completó la prueba.",
+            configuration: {
+                openai_configured: Boolean(config.openaiApiKey),
+                primary_model: config.openaiModel,
+                fallback_model: config.openaiFallbackModel,
+                configured_model: configuredModel,
+                request_timeout_ms: config.requestTimeoutMs,
+                diagnostics_enabled: true,
+            },
+            origin: originCheck,
+            directus,
+            ai_settings: {
+                ...aiSettings,
+                effective_enabled: aiEnabled,
+            },
+            openai: {
+                ok: Boolean(successfulModel),
+                successful_model: successfulModel,
+                attempts: modelTests,
+            },
+            last_ai_attempt: lastAiAttempt,
+            recent_summary: recentSummary,
         });
     }
     if (request.method !== "POST" ||
@@ -391,6 +551,8 @@ const server = createServer(async (request, response) => {
                 fallback_used: false,
                 fallback_code: null,
                 fallback_reason: null,
+                request_id: requestId,
+                api_version: API_VERSION,
             });
         }
         catch (error) {
@@ -424,6 +586,8 @@ const server = createServer(async (request, response) => {
                 fallback_used: true,
                 fallback_code: failure.code,
                 fallback_reason: failure.reason,
+                request_id: requestId,
+                api_version: API_VERSION,
             });
         }
         if (settings.persist_events) {

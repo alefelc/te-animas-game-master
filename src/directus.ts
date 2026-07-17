@@ -175,3 +175,77 @@ export async function persistDecision(
     }),
   });
 }
+
+export interface AiSettingsDiagnostic {
+  ok: boolean;
+  found: boolean;
+  game_id: string | null;
+  settings: AiSettings | null;
+  latency_ms: number;
+  reason: string | null;
+}
+
+export async function diagnoseAiSettings(
+  gameId?: string | null,
+): Promise<AiSettingsDiagnostic> {
+  const startedAt = Date.now();
+  try {
+    const params = new URLSearchParams({
+      limit: "1",
+      fields: [
+        "game",
+        "enabled",
+        "model",
+        "director_prompt",
+        "candidate_limit",
+        "decision_timeout_ms",
+        "persist_events",
+        "show_host_messages",
+        "status",
+      ].join(","),
+      sort: "-date_updated,-date_created",
+    });
+
+    if (gameId) params.set("filter[game][_eq]", gameId);
+
+    const rows = await request<Array<Partial<AiSettings> & { game?: unknown }>>(
+      `/items/pc_ai_settings?${params.toString()}`,
+    );
+    const row = rows[0];
+
+    if (!row) {
+      return {
+        ok: true,
+        found: false,
+        game_id: gameId || null,
+        settings: null,
+        latency_ms: Date.now() - startedAt,
+        reason:
+          "No existe un registro de pc_ai_settings; se usarán las variables del servicio.",
+      };
+    }
+
+    return {
+      ok: true,
+      found: true,
+      game_id:
+        typeof row.game === "string" ? row.game : gameId || null,
+      settings: {
+        ...defaultSettings,
+        ...row,
+        model: row.model || config.openaiModel,
+      },
+      latency_ms: Date.now() - startedAt,
+      reason: null,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      found: false,
+      game_id: gameId || null,
+      settings: null,
+      latency_ms: Date.now() - startedAt,
+      reason: error instanceof Error ? error.message.slice(0, 500) : String(error),
+    };
+  }
+}
