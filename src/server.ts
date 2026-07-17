@@ -11,6 +11,8 @@ import { chooseWithOpenAI } from "./openai-director.js";
 import {
   NextRequestSchema,
   NextResponseSchema,
+  type ModelDecision,
+  type NextRequest,
   type NextResponse,
 } from "./schemas.js";
 import {
@@ -20,8 +22,9 @@ import {
 } from "./directus.js";
 import { SlidingMinuteLimiter } from "./rate-limit.js";
 
-const API_VERSION = "1.5.2";
+const API_VERSION = "1.6.0";
 const limiter = new SlidingMinuteLimiter(config.rateLimitPerMinute);
+const MAX_ATTEMPT_HISTORY = 20;
 
 interface FailureInfo {
   code: string;
@@ -29,14 +32,26 @@ interface FailureInfo {
   status: number | null;
 }
 
+interface ModelAttempt {
+  model: string;
+  outcome: "success" | "error";
+  code: string | null;
+  reason: string | null;
+  status: number | null;
+  latency_ms: number;
+}
+
 interface LastAiAttempt {
   state: "never" | "openai" | "local_fallback";
   at: string | null;
   request_id: string | null;
   game_id: string | null;
+  session_id: string | null;
+  resolved_count: number | null;
   settings_enabled: boolean | null;
   configured_model: string | null;
   attempted_models: string[];
+  model_attempts: ModelAttempt[];
   successful_model: string | null;
   code: string | null;
   reason: string | null;
@@ -44,25 +59,46 @@ interface LastAiAttempt {
   latency_ms: number | null;
 }
 
-let lastAiAttempt: LastAiAttempt = {
+const emptyAiAttempt = (): LastAiAttempt => ({
   state: "never",
   at: null,
   request_id: null,
   game_id: null,
+  session_id: null,
+  resolved_count: null,
   settings_enabled: null,
   configured_model: null,
   attempted_models: [],
+  model_attempts: [],
   successful_model: null,
   code: null,
   reason: null,
   status: null,
   latency_ms: null,
-};
+});
+
+let lastAiAttempt: LastAiAttempt = emptyAiAttempt();
+let recentAiAttempts: LastAiAttempt[] = [];
+
+function recordAiAttempt(attempt: LastAiAttempt) {
+  lastAiAttempt = attempt;
+  recentAiAttempts = [attempt, ...recentAiAttempts].slice(
+    0,
+    MAX_ATTEMPT_HISTORY,
+  );
+}
 
 class AiDisabledError extends Error {
   constructor() {
     super("Dirección adaptativa desactivada en pc_ai_settings.");
     this.name = "AiDisabledError";
+  }
+}
+
+class InvalidModelSelectionError extends Error {
+  constructor() {
+    super("El modelo eligió una carta fuera de la lista válida.");
+    this.name = "InvalidModelSelectionError";
   }
 }
 
@@ -78,7 +114,10 @@ function setCors(response: ServerResponse, origin?: string) {
 
   response.setHeader("Vary", "Origin");
   response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  response.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, X-Game-Session, X-Game-Draw",
+  );
   response.setHeader("Access-Control-Max-Age", "600");
 }
 
@@ -114,6 +153,11 @@ function clientKey(request: IncomingMessage) {
   );
 }
 
+function headerValue(request: IncomingMessage, name: string) {
+  const value = request.headers[name];
+  return Array.isArray(value) ? value[0] : value;
+}
+
 function errorStatus(error: unknown): number | null {
   if (!error || typeof error !== "object" || !("status" in error)) return null;
   const status = (error as { status?: unknown }).status;
@@ -132,6 +176,18 @@ function classifyAiFailure(error: unknown): FailureInfo {
 
   if (error instanceof AiDisabledError || lower.includes("desactivada")) {
     return { code: "AI_DISABLED", reason, status };
+  }
+
+  if (error instanceof InvalidModelSelectionError) {
+    return { code: "OPENAI_SELECTION", reason, status };
+  }
+
+  if (
+    lower.includes("decisión utilizable") ||
+    lower.includes("output_parsed") ||
+    lower.includes("structured output")
+  ) {
+    return { code: "OPENAI_OUTPUT", reason, status };
   }
 
   if (status === 401) return { code: "OPENAI_AUTH", reason, status };
@@ -171,13 +227,23 @@ function classifyAiFailure(error: unknown): FailureInfo {
   return { code: "OPENAI_ERROR", reason, status };
 }
 
+function shouldRetrySameModel(error: unknown): boolean {
+  const { code } = classifyAiFailure(error);
+  return [
+    "OPENAI_OUTPUT",
+    "OPENAI_SELECTION",
+    "OPENAI_NETWORK",
+    "OPENAI_SERVER",
+    "OPENAI_RATE_LIMIT",
+    "OPENAI_ERROR",
+  ].includes(code);
+}
+
 function shouldTryFallbackModel(error: unknown): boolean {
   const status = errorStatus(error);
 
-  // Una credencial inválida afectará a ambos modelos; no se duplica la espera.
   if (status === 401 || error instanceof AiDisabledError) return false;
 
-  // Errores de modelo, saturación, red o servidor sí justifican probar otra IA.
   if (
     status === 400 ||
     status === 403 ||
@@ -190,20 +256,17 @@ function shouldTryFallbackModel(error: unknown): boolean {
     return true;
   }
 
-  const message = safeErrorMessage(error).toLowerCase();
-  return (
-    status === null ||
-    message.includes("model") ||
-    message.includes("not found") ||
-    message.includes("unsupported") ||
-    message.includes("does not exist") ||
-    message.includes("timeout") ||
-    message.includes("timed out") ||
-    message.includes("abort") ||
-    message.includes("network") ||
-    message.includes("connection") ||
-    message.includes("fetch")
-  );
+  const code = classifyAiFailure(error).code;
+  return [
+    "OPENAI_OUTPUT",
+    "OPENAI_SELECTION",
+    "OPENAI_TIMEOUT",
+    "OPENAI_NETWORK",
+    "OPENAI_SERVER",
+    "OPENAI_RATE_LIMIT",
+    "OPENAI_ERROR",
+    "OPENAI_MODEL",
+  ].includes(code);
 }
 
 function validationIssues(error: ZodError) {
@@ -211,6 +274,55 @@ function validationIssues(error: ZodError) {
     field: issue.path.length ? issue.path.map(String).join(".") : "request",
     message: issue.message,
   }));
+}
+
+async function chooseValidDecision(
+  requestBody: NextRequest,
+  model: string,
+  timeoutMs: number,
+  customPrompt: string | null,
+  attemptedModels: string[],
+  modelAttempts: ModelAttempt[],
+): Promise<ModelDecision> {
+  const startedAt = Date.now();
+  attemptedModels.push(model);
+
+  try {
+    const decision = await chooseWithOpenAI(requestBody, {
+      model,
+      timeoutMs,
+      customPrompt,
+    });
+
+    if (
+      !requestBody.candidates.some(
+        (card) => card.id === decision.selected_card_id,
+      )
+    ) {
+      throw new InvalidModelSelectionError();
+    }
+
+    modelAttempts.push({
+      model,
+      outcome: "success",
+      code: null,
+      reason: null,
+      status: null,
+      latency_ms: Date.now() - startedAt,
+    });
+    return decision;
+  } catch (error) {
+    const failure = classifyAiFailure(error);
+    modelAttempts.push({
+      model,
+      outcome: "error",
+      code: failure.code,
+      reason: failure.reason,
+      status: failure.status,
+      latency_ms: Date.now() - startedAt,
+    });
+    throw error;
+  }
 }
 
 const server = createServer(async (request, response) => {
@@ -235,6 +347,20 @@ const server = createServer(async (request, response) => {
     return response.end();
   }
 
+  const requestedSessionId = requestUrl.searchParams.get("session_id");
+  const attemptHistory = requestedSessionId
+    ? recentAiAttempts.filter(
+        (attempt) => attempt.session_id === requestedSessionId,
+      )
+    : recentAiAttempts;
+  const recentSummary = {
+    total: attemptHistory.length,
+    openai: attemptHistory.filter((attempt) => attempt.state === "openai").length,
+    local_fallback: attemptHistory.filter(
+      (attempt) => attempt.state === "local_fallback",
+    ).length,
+  };
+
   if (request.method === "GET" && requestUrl.pathname === "/health") {
     return json(response, 200, {
       ok: true,
@@ -246,6 +372,7 @@ const server = createServer(async (request, response) => {
       fallback_model: config.openaiFallbackModel,
       request_timeout_ms: config.requestTimeoutMs,
       last_ai_attempt: lastAiAttempt,
+      recent_summary: recentSummary,
     });
   }
 
@@ -256,8 +383,11 @@ const server = createServer(async (request, response) => {
       note:
         lastAiAttempt.state === "never"
           ? "Iniciá una partida y volvé a consultar este endpoint."
-          : "Este estado corresponde al último intento real de una partida.",
+          : "Se muestran el último intento y hasta 20 decisiones recientes.",
+      session_filter: requestedSessionId,
       last_ai_attempt: lastAiAttempt,
+      recent_summary: recentSummary,
+      recent_ai_attempts: attemptHistory.slice(0, MAX_ATTEMPT_HISTORY),
     });
   }
 
@@ -272,8 +402,28 @@ const server = createServer(async (request, response) => {
   }
 
   if (!limiter.allow(clientKey(request))) {
+    const sessionId = headerValue(request, "x-game-session") ?? null;
+    const resolvedCountHeader = headerValue(request, "x-game-draw");
+    const resolvedCount = resolvedCountHeader
+      ? Number(resolvedCountHeader)
+      : null;
+
+    recordAiAttempt({
+      ...emptyAiAttempt(),
+      state: "local_fallback",
+      at: new Date().toISOString(),
+      request_id: requestId,
+      session_id: sessionId,
+      resolved_count: Number.isFinite(resolvedCount) ? resolvedCount : null,
+      code: "SERVICE_RATE_LIMIT",
+      reason: "El servicio rechazó la solicitud antes de consultar OpenAI.",
+      status: 429,
+      latency_ms: 0,
+    });
+
     return json(response, 429, {
       error: "Demasiadas solicitudes.",
+      code: "SERVICE_RATE_LIMIT",
       request_id: requestId,
     });
   }
@@ -294,7 +444,9 @@ const server = createServer(async (request, response) => {
       config.requestTimeoutMs,
     );
     const attemptedModels: string[] = [];
-    let primaryFailure: FailureInfo | null = null;
+    const modelAttempts: ModelAttempt[] = [];
+    let firstFailure: FailureInfo | null = null;
+    let recoveryCode: string | null = null;
     let responseBody: NextResponse;
 
     try {
@@ -303,61 +455,88 @@ const server = createServer(async (request, response) => {
       }
 
       let usedModel = preferredModel;
-      let decision;
+      let decision: ModelDecision | null = null;
+      let recoveryError: unknown = null;
 
       try {
-        attemptedModels.push(preferredModel);
-        decision = await chooseWithOpenAI(limitedBody, {
-          model: preferredModel,
+        decision = await chooseValidDecision(
+          limitedBody,
+          preferredModel,
           timeoutMs,
-          customPrompt: settings.director_prompt,
-        });
+          settings.director_prompt,
+          attemptedModels,
+          modelAttempts,
+        );
       } catch (primaryError) {
-        primaryFailure = classifyAiFailure(primaryError);
+        firstFailure = classifyAiFailure(primaryError);
+        recoveryError = primaryError;
 
-        if (
-          fallbackModel === preferredModel ||
-          !shouldTryFallbackModel(primaryError)
-        ) {
-          throw primaryError;
+        if (shouldRetrySameModel(primaryError)) {
+          console.warn(
+            `[${requestId}] ${preferredModel} devolvió una decisión transitoria; se reintenta el mismo modelo.`,
+            primaryError,
+          );
+
+          try {
+            decision = await chooseValidDecision(
+              limitedBody,
+              preferredModel,
+              timeoutMs,
+              settings.director_prompt,
+              attemptedModels,
+              modelAttempts,
+            );
+            recoveryCode = "RECOVERED_WITH_PRIMARY_RETRY";
+            recoveryError = null;
+          } catch (retryError) {
+            recoveryError = retryError;
+          }
         }
 
-        console.warn(
-          `[${requestId}] El modelo ${preferredModel} falló; se prueba ${fallbackModel}.`,
-          primaryError,
-        );
-        usedModel = fallbackModel;
-        attemptedModels.push(fallbackModel);
-        decision = await chooseWithOpenAI(limitedBody, {
-          model: fallbackModel,
-          timeoutMs,
-          customPrompt: settings.director_prompt,
-        });
-      }
+        if (
+          !decision &&
+          fallbackModel !== preferredModel &&
+          shouldTryFallbackModel(recoveryError)
+        ) {
+          console.warn(
+            `[${requestId}] ${preferredModel} no se recuperó; se prueba ${fallbackModel}.`,
+            recoveryError,
+          );
+          usedModel = fallbackModel;
+          decision = await chooseValidDecision(
+            limitedBody,
+            fallbackModel,
+            timeoutMs,
+            settings.director_prompt,
+            attemptedModels,
+            modelAttempts,
+          );
+          recoveryCode = "RECOVERED_WITH_FALLBACK_MODEL";
+        }
 
-      if (
-        !limitedBody.candidates.some(
-          (card) => card.id === decision.selected_card_id,
-        )
-      ) {
-        throw new Error("El modelo eligió una carta fuera de la lista válida.");
+        if (!decision) {
+          throw recoveryError ?? primaryError;
+        }
       }
 
       const latencyMs = Date.now() - startedAt;
-      lastAiAttempt = {
+      recordAiAttempt({
         state: "openai",
         at: new Date().toISOString(),
         request_id: requestId,
         game_id: body.game_id,
+        session_id: body.session_id,
+        resolved_count: body.resolved_count,
         settings_enabled: settings.enabled,
         configured_model: preferredModel,
         attempted_models: attemptedModels,
+        model_attempts: modelAttempts,
         successful_model: usedModel,
-        code: primaryFailure ? "RECOVERED_WITH_FALLBACK_MODEL" : null,
-        reason: primaryFailure?.reason ?? null,
-        status: primaryFailure?.status ?? null,
+        code: recoveryCode,
+        reason: firstFailure?.reason ?? null,
+        status: firstFailure?.status ?? null,
         latency_ms: latencyMs,
-      };
+      });
 
       responseBody = NextResponseSchema.parse({
         ...decision,
@@ -377,20 +556,23 @@ const server = createServer(async (request, response) => {
       );
       const decision = chooseFallback(limitedBody);
 
-      lastAiAttempt = {
+      recordAiAttempt({
         state: "local_fallback",
         at: new Date().toISOString(),
         request_id: requestId,
         game_id: body.game_id,
+        session_id: body.session_id,
+        resolved_count: body.resolved_count,
         settings_enabled: settings.enabled,
         configured_model: preferredModel,
         attempted_models: attemptedModels,
+        model_attempts: modelAttempts,
         successful_model: null,
         code: failure.code,
         reason: failure.reason,
         status: failure.status,
         latency_ms: latencyMs,
-      };
+      });
 
       responseBody = NextResponseSchema.parse({
         ...decision,
@@ -441,5 +623,7 @@ const server = createServer(async (request, response) => {
 });
 
 server.listen(config.port, "0.0.0.0", () => {
-  console.log(`Dirección adaptativa ${API_VERSION} escuchando en el puerto ${config.port}.`);
+  console.log(
+    `Dirección adaptativa ${API_VERSION} escuchando en el puerto ${config.port}.`,
+  );
 });
