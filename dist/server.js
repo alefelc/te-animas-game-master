@@ -1,0 +1,641 @@
+import { createServer, } from "node:http";
+import { randomUUID } from "node:crypto";
+import { ZodError } from "zod";
+import { config } from "./config.js";
+import { chooseFallback } from "./fallback.js";
+import { chooseWithOpenAI, probeOpenAIModel, } from "./openai-director.js";
+import { NextRequestSchema, NextResponseSchema, } from "./schemas.js";
+import { checkDirectusReady, diagnoseAiSettings, persistDecision, persistResolvedEvent, readAiSettings, } from "./directus.js";
+import { SlidingMinuteLimiter } from "./rate-limit.js";
+const API_VERSION = "1.8.1";
+const limiter = new SlidingMinuteLimiter(config.rateLimitPerMinute);
+const MAX_ATTEMPT_HISTORY = 20;
+const emptyAiAttempt = () => ({
+    state: "never",
+    at: null,
+    request_id: null,
+    game_id: null,
+    session_id: null,
+    resolved_count: null,
+    settings_enabled: null,
+    configured_model: null,
+    attempted_models: [],
+    model_attempts: [],
+    successful_model: null,
+    code: null,
+    reason: null,
+    status: null,
+    latency_ms: null,
+});
+let lastAiAttempt = emptyAiAttempt();
+let recentAiAttempts = [];
+function recordAiAttempt(attempt) {
+    lastAiAttempt = attempt;
+    recentAiAttempts = [attempt, ...recentAiAttempts].slice(0, MAX_ATTEMPT_HISTORY);
+}
+class AiDisabledError extends Error {
+    constructor() {
+        super("Dirección adaptativa desactivada en pc_ai_settings.");
+        this.name = "AiDisabledError";
+    }
+}
+class InvalidModelSelectionError extends Error {
+    constructor() {
+        super("El modelo eligió una carta fuera de la lista válida.");
+        this.name = "InvalidModelSelectionError";
+    }
+}
+function originAllowed(origin) {
+    if (!origin)
+        return true;
+    return config.allowedOrigins.has(origin);
+}
+function setCors(response, origin) {
+    if (origin && config.allowedOrigins.has(origin)) {
+        response.setHeader("Access-Control-Allow-Origin", origin);
+    }
+    response.setHeader("Vary", "Origin");
+    response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    response.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Game-Session, X-Game-Draw, X-Diagnostic-Token, Authorization");
+    response.setHeader("Access-Control-Expose-Headers", "X-Request-ID, X-Game-Master-Version");
+    response.setHeader("Access-Control-Max-Age", "600");
+}
+function json(response, status, payload) {
+    response.statusCode = status;
+    response.setHeader("Content-Type", "application/json; charset=utf-8");
+    response.end(JSON.stringify(payload));
+}
+async function readBody(request, maxBytes = 1_500_000) {
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of request) {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        size += buffer.length;
+        if (size > maxBytes) {
+            throw new Error("El cuerpo de la solicitud es demasiado grande.");
+        }
+        chunks.push(buffer);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+}
+function clientKey(request) {
+    const forwarded = request.headers["x-forwarded-for"];
+    const value = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    return (value?.split(",")[0]?.trim() || request.socket.remoteAddress || "unknown");
+}
+function headerValue(request, name) {
+    const value = request.headers[name];
+    return Array.isArray(value) ? value[0] : value;
+}
+function diagnosticAuthorized(request) {
+    if (!config.diagnosticToken)
+        return false;
+    const direct = headerValue(request, "x-diagnostic-token");
+    const authorization = headerValue(request, "authorization");
+    const bearer = authorization?.startsWith("Bearer ")
+        ? authorization.slice(7).trim()
+        : null;
+    return direct === config.diagnosticToken || bearer === config.diagnosticToken;
+}
+function diagnosticModels(configuredModel) {
+    return [configuredModel, config.openaiModel, config.openaiFallbackModel]
+        .map((value) => String(value || "").trim())
+        .filter((value, index, values) => value && values.indexOf(value) === index);
+}
+function errorStatus(error) {
+    if (!error || typeof error !== "object" || !("status" in error))
+        return null;
+    const status = error.status;
+    return typeof status === "number" ? status : null;
+}
+function safeErrorMessage(error) {
+    const raw = error instanceof Error ? error.message : String(error);
+    return raw.replace(/sk-[A-Za-z0-9_-]+/g, "[clave oculta]").slice(0, 500);
+}
+function classifyAiFailure(error) {
+    const status = errorStatus(error);
+    const reason = safeErrorMessage(error);
+    const lower = reason.toLowerCase();
+    if (error instanceof AiDisabledError || lower.includes("desactivada")) {
+        return { code: "AI_DISABLED", reason, status };
+    }
+    if (lower.includes("openai_api_key") ||
+        lower.includes("api key") && lower.includes("configur")) {
+        return { code: "OPENAI_CONFIG", reason, status };
+    }
+    if (error instanceof InvalidModelSelectionError) {
+        return { code: "OPENAI_SELECTION", reason, status };
+    }
+    if (lower.includes("decisión utilizable") ||
+        lower.includes("output_parsed") ||
+        lower.includes("structured output")) {
+        return { code: "OPENAI_OUTPUT", reason, status };
+    }
+    if (status === 401)
+        return { code: "OPENAI_AUTH", reason, status };
+    if (status === 403)
+        return { code: "OPENAI_ACCESS", reason, status };
+    if (status === 429)
+        return { code: "OPENAI_RATE_LIMIT", reason, status };
+    if (status === 404 ||
+        ((status === 400 || status === 403) &&
+            (lower.includes("model") || lower.includes("modelo")))) {
+        return { code: "OPENAI_MODEL", reason, status };
+    }
+    if (status === 408 ||
+        lower.includes("timeout") ||
+        lower.includes("timed out") ||
+        lower.includes("abort")) {
+        return { code: "OPENAI_TIMEOUT", reason, status };
+    }
+    if (lower.includes("network") ||
+        lower.includes("connection") ||
+        lower.includes("fetch") ||
+        lower.includes("econn")) {
+        return { code: "OPENAI_NETWORK", reason, status };
+    }
+    if (status !== null && status >= 500) {
+        return { code: "OPENAI_SERVER", reason, status };
+    }
+    return { code: "OPENAI_ERROR", reason, status };
+}
+function shouldRetrySameModel(error) {
+    const { code } = classifyAiFailure(error);
+    return [
+        "OPENAI_OUTPUT",
+        "OPENAI_SELECTION",
+        "OPENAI_NETWORK",
+        "OPENAI_SERVER",
+        "OPENAI_RATE_LIMIT",
+        "OPENAI_ERROR",
+    ].includes(code);
+}
+function shouldTryFallbackModel(error) {
+    const status = errorStatus(error);
+    if (status === 401 || error instanceof AiDisabledError)
+        return false;
+    if (status === 400 ||
+        status === 403 ||
+        status === 404 ||
+        status === 408 ||
+        status === 409 ||
+        status === 429 ||
+        (status !== null && status >= 500)) {
+        return true;
+    }
+    const code = classifyAiFailure(error).code;
+    return [
+        "OPENAI_OUTPUT",
+        "OPENAI_SELECTION",
+        "OPENAI_TIMEOUT",
+        "OPENAI_NETWORK",
+        "OPENAI_SERVER",
+        "OPENAI_RATE_LIMIT",
+        "OPENAI_ERROR",
+        "OPENAI_MODEL",
+    ].includes(code);
+}
+function validationIssues(error) {
+    return error.issues.slice(0, 20).map((issue) => ({
+        field: issue.path.length ? issue.path.map(String).join(".") : "request",
+        message: issue.message,
+    }));
+}
+async function chooseValidDecision(requestBody, model, timeoutMs, customPrompt, attemptedModels, modelAttempts) {
+    const startedAt = Date.now();
+    attemptedModels.push(model);
+    try {
+        const decision = await chooseWithOpenAI(requestBody, {
+            model,
+            timeoutMs,
+            customPrompt,
+        });
+        if (!requestBody.candidates.some((card) => card.id === decision.selected_card_id)) {
+            throw new InvalidModelSelectionError();
+        }
+        modelAttempts.push({
+            model,
+            outcome: "success",
+            code: null,
+            reason: null,
+            status: null,
+            latency_ms: Date.now() - startedAt,
+        });
+        return decision;
+    }
+    catch (error) {
+        const failure = classifyAiFailure(error);
+        modelAttempts.push({
+            model,
+            outcome: "error",
+            code: failure.code,
+            reason: failure.reason,
+            status: failure.status,
+            latency_ms: Date.now() - startedAt,
+        });
+        throw error;
+    }
+}
+const server = createServer(async (request, response) => {
+    const requestId = randomUUID();
+    const origin = typeof request.headers.origin === "string"
+        ? request.headers.origin
+        : undefined;
+    const requestUrl = new URL(request.url ?? "/", "http://localhost");
+    setCors(response, origin);
+    response.setHeader("X-Request-ID", requestId);
+    response.setHeader("X-Game-Master-Version", API_VERSION);
+    if (!originAllowed(origin)) {
+        return json(response, 403, {
+            error: "Origen no permitido.",
+            request_id: requestId,
+        });
+    }
+    if (request.method === "OPTIONS") {
+        response.statusCode = 204;
+        return response.end();
+    }
+    const requestedSessionId = requestUrl.searchParams.get("session_id");
+    const attemptHistory = requestedSessionId
+        ? recentAiAttempts.filter((attempt) => attempt.session_id === requestedSessionId)
+        : recentAiAttempts;
+    const recentSummary = {
+        total: attemptHistory.length,
+        openai: attemptHistory.filter((attempt) => attempt.state === "openai").length,
+        local_fallback: attemptHistory.filter((attempt) => attempt.state === "local_fallback").length,
+    };
+    if (request.method === "GET" && requestUrl.pathname === "/ready") {
+        const directus = await checkDirectusReady();
+        return json(response, directus.ok ? 200 : 503, {
+            ok: directus.ok,
+            ready: directus.ok,
+            version: API_VERSION,
+            api_version: API_VERSION,
+            openai_configured: Boolean(config.openaiApiKey),
+            directus,
+        });
+    }
+    if (request.method === "GET" && requestUrl.pathname === "/health") {
+        return json(response, 200, {
+            ok: true,
+            game_master: true,
+            version: API_VERSION,
+            api_version: API_VERSION,
+            request_contract: "v4-compatible",
+            openai_configured: Boolean(config.openaiApiKey),
+            primary_model: config.openaiModel,
+            fallback_model: config.openaiFallbackModel,
+            request_timeout_ms: config.requestTimeoutMs,
+            diagnostics_enabled: Boolean(config.diagnosticToken),
+            allowed_origins: [...config.allowedOrigins],
+            last_ai_attempt: lastAiAttempt,
+            recent_summary: recentSummary,
+        });
+    }
+    if (request.method === "GET" && requestUrl.pathname === "/health/ai") {
+        return json(response, 200, {
+            ok: lastAiAttempt.state === "openai",
+            api_version: API_VERSION,
+            note: lastAiAttempt.state === "never"
+                ? "Iniciá una partida y volvé a consultar este endpoint."
+                : "Se muestran el último intento y hasta 20 decisiones recientes.",
+            session_filter: requestedSessionId,
+            last_ai_attempt: lastAiAttempt,
+            recent_summary: recentSummary,
+            recent_ai_attempts: attemptHistory.slice(0, MAX_ATTEMPT_HISTORY),
+        });
+    }
+    if (request.method === "GET" && requestUrl.pathname === "/diagnostics/ai") {
+        if (!config.diagnosticToken) {
+            return json(response, 503, {
+                ok: false,
+                code: "DIAGNOSTICS_DISABLED",
+                error: "DIAGNOSTIC_TOKEN no está configurado en el servicio.",
+                request_id: requestId,
+                api_version: API_VERSION,
+            });
+        }
+        if (!diagnosticAuthorized(request)) {
+            return json(response, 401, {
+                ok: false,
+                code: "DIAGNOSTICS_UNAUTHORIZED",
+                error: "Token de diagnóstico incorrecto o ausente.",
+                request_id: requestId,
+                api_version: API_VERSION,
+            });
+        }
+        return json(response, 200, {
+            ok: true,
+            active_probe_required: true,
+            endpoint: "/diagnostics/ai",
+            method: "POST",
+            api_version: API_VERSION,
+            request_id: requestId,
+            configuration: {
+                openai_configured: Boolean(config.openaiApiKey),
+                primary_model: config.openaiModel,
+                fallback_model: config.openaiFallbackModel,
+                directus_url: config.directusUrl,
+                request_timeout_ms: config.requestTimeoutMs,
+                allowed_origins: [...config.allowedOrigins],
+            },
+        });
+    }
+    if (request.method === "POST" && requestUrl.pathname === "/diagnostics/ai") {
+        if (!config.diagnosticToken) {
+            return json(response, 503, {
+                ok: false,
+                code: "DIAGNOSTICS_DISABLED",
+                error: "DIAGNOSTIC_TOKEN no está configurado en el servicio.",
+                request_id: requestId,
+                api_version: API_VERSION,
+            });
+        }
+        if (!diagnosticAuthorized(request)) {
+            return json(response, 401, {
+                ok: false,
+                code: "DIAGNOSTICS_UNAUTHORIZED",
+                error: "Token de diagnóstico incorrecto o ausente.",
+                request_id: requestId,
+                api_version: API_VERSION,
+            });
+        }
+        let diagnosticBody = {};
+        try {
+            diagnosticBody = (await readBody(request, 50_000));
+        }
+        catch (error) {
+            return json(response, 400, {
+                ok: false,
+                code: "INVALID_DIAGNOSTIC_REQUEST",
+                error: safeErrorMessage(error),
+                request_id: requestId,
+                api_version: API_VERSION,
+            });
+        }
+        const directus = await checkDirectusReady();
+        const aiSettings = await diagnoseAiSettings(diagnosticBody.game_id || null);
+        const configuredModel = aiSettings.settings?.model || config.openaiModel;
+        const models = diagnosticModels(configuredModel);
+        const modelTests = [];
+        let successfulModel = null;
+        for (const model of models) {
+            const started = Date.now();
+            try {
+                const result = await probeOpenAIModel(model, config.requestTimeoutMs);
+                modelTests.push({ ...result, code: null, reason: null, status: null });
+                successfulModel = model;
+                break;
+            }
+            catch (error) {
+                const failure = classifyAiFailure(error);
+                modelTests.push({
+                    ok: false,
+                    model,
+                    latency_ms: Date.now() - started,
+                    code: failure.code,
+                    reason: failure.reason,
+                    status: failure.status,
+                });
+            }
+        }
+        const testedOrigin = String(diagnosticBody.origin || origin || "").replace(/\/+$/, "");
+        const originCheck = {
+            supplied: testedOrigin || null,
+            allowed: testedOrigin ? config.allowedOrigins.has(testedOrigin) : null,
+        };
+        const aiEnabled = !aiSettings.found || aiSettings.settings?.enabled !== false;
+        const ok = Boolean(successfulModel) && directus.ok && aiSettings.ok && aiEnabled;
+        return json(response, ok ? 200 : 503, {
+            ok,
+            api_version: API_VERSION,
+            request_id: requestId,
+            checked_at: new Date().toISOString(),
+            summary: !aiEnabled
+                ? "La conexión existe, pero la IA está desactivada en pc_ai_settings."
+                : successfulModel
+                    ? directus.ok && aiSettings.ok
+                        ? "La API, el catálogo y OpenAI respondieron correctamente."
+                        : "OpenAI respondió, pero hay un problema en la conexión o configuración del catálogo."
+                    : "La API está accesible, pero ningún modelo de OpenAI completó la prueba.",
+            configuration: {
+                openai_configured: Boolean(config.openaiApiKey),
+                primary_model: config.openaiModel,
+                fallback_model: config.openaiFallbackModel,
+                configured_model: configuredModel,
+                request_timeout_ms: config.requestTimeoutMs,
+                diagnostics_enabled: true,
+            },
+            origin: originCheck,
+            directus,
+            ai_settings: {
+                ...aiSettings,
+                effective_enabled: aiEnabled,
+            },
+            openai: {
+                ok: Boolean(successfulModel),
+                successful_model: successfulModel,
+                attempts: modelTests,
+            },
+            last_ai_attempt: lastAiAttempt,
+            recent_summary: recentSummary,
+        });
+    }
+    if (request.method !== "POST" ||
+        requestUrl.pathname !== "/v1/game-master/next") {
+        return json(response, 404, {
+            error: "Ruta no encontrada.",
+            request_id: requestId,
+        });
+    }
+    if (!limiter.allow(clientKey(request))) {
+        const sessionId = headerValue(request, "x-game-session") ?? null;
+        const resolvedCountHeader = headerValue(request, "x-game-draw");
+        const resolvedCount = resolvedCountHeader
+            ? Number(resolvedCountHeader)
+            : null;
+        recordAiAttempt({
+            ...emptyAiAttempt(),
+            state: "local_fallback",
+            at: new Date().toISOString(),
+            request_id: requestId,
+            session_id: sessionId,
+            resolved_count: Number.isFinite(resolvedCount) ? resolvedCount : null,
+            code: "SERVICE_RATE_LIMIT",
+            reason: "El servicio rechazó la solicitud antes de consultar OpenAI.",
+            status: 429,
+            latency_ms: 0,
+        });
+        return json(response, 429, {
+            error: "Demasiadas solicitudes.",
+            code: "SERVICE_RATE_LIMIT",
+            request_id: requestId,
+        });
+    }
+    const startedAt = Date.now();
+    try {
+        const body = NextRequestSchema.parse(await readBody(request));
+        const settings = await readAiSettings(body.game_id);
+        const limitedBody = {
+            ...body,
+            candidates: body.candidates.slice(0, settings.candidate_limit),
+        };
+        const preferredModel = (settings.model || config.openaiModel).trim();
+        const fallbackModel = config.openaiFallbackModel.trim();
+        const timeoutMs = Math.max(settings.decision_timeout_ms || config.requestTimeoutMs, config.requestTimeoutMs);
+        const attemptedModels = [];
+        const modelAttempts = [];
+        let firstFailure = null;
+        let recoveryCode = null;
+        let responseBody;
+        try {
+            if (!settings.enabled) {
+                throw new AiDisabledError();
+            }
+            let usedModel = preferredModel;
+            let decision = null;
+            let recoveryError = null;
+            try {
+                decision = await chooseValidDecision(limitedBody, preferredModel, timeoutMs, settings.director_prompt, attemptedModels, modelAttempts);
+            }
+            catch (primaryError) {
+                firstFailure = classifyAiFailure(primaryError);
+                recoveryError = primaryError;
+                if (shouldRetrySameModel(primaryError)) {
+                    console.warn(`[${requestId}] ${preferredModel} devolvió una decisión transitoria; se reintenta el mismo modelo.`, primaryError);
+                    try {
+                        decision = await chooseValidDecision(limitedBody, preferredModel, timeoutMs, settings.director_prompt, attemptedModels, modelAttempts);
+                        recoveryCode = "RECOVERED_WITH_PRIMARY_RETRY";
+                        recoveryError = null;
+                    }
+                    catch (retryError) {
+                        recoveryError = retryError;
+                    }
+                }
+                if (!decision &&
+                    fallbackModel !== preferredModel &&
+                    shouldTryFallbackModel(recoveryError)) {
+                    console.warn(`[${requestId}] ${preferredModel} no se recuperó; se prueba ${fallbackModel}.`, recoveryError);
+                    usedModel = fallbackModel;
+                    decision = await chooseValidDecision(limitedBody, fallbackModel, timeoutMs, settings.director_prompt, attemptedModels, modelAttempts);
+                    recoveryCode = "RECOVERED_WITH_FALLBACK_MODEL";
+                }
+                if (!decision) {
+                    throw recoveryError ?? primaryError;
+                }
+            }
+            const latencyMs = Date.now() - startedAt;
+            recordAiAttempt({
+                state: "openai",
+                at: new Date().toISOString(),
+                request_id: requestId,
+                game_id: body.game_id,
+                session_id: body.session_id,
+                resolved_count: body.resolved_count,
+                settings_enabled: settings.enabled,
+                configured_model: preferredModel,
+                attempted_models: attemptedModels,
+                model_attempts: modelAttempts,
+                successful_model: usedModel,
+                code: recoveryCode,
+                reason: firstFailure?.reason ?? null,
+                status: firstFailure?.status ?? null,
+                latency_ms: latencyMs,
+            });
+            responseBody = NextResponseSchema.parse({
+                ...decision,
+                host_message: settings.show_host_messages ? decision.host_message : "",
+                provider: "openai",
+                model: usedModel,
+                latency_ms: latencyMs,
+                fallback_used: false,
+                fallback_code: null,
+                fallback_reason: null,
+                request_id: requestId,
+                api_version: API_VERSION,
+            });
+        }
+        catch (error) {
+            const failure = classifyAiFailure(error);
+            const latencyMs = Date.now() - startedAt;
+            console.warn(`[${requestId}] Se usó selección adaptativa local (${failure.code}): ${failure.reason}`);
+            const decision = chooseFallback(limitedBody);
+            recordAiAttempt({
+                state: "local_fallback",
+                at: new Date().toISOString(),
+                request_id: requestId,
+                game_id: body.game_id,
+                session_id: body.session_id,
+                resolved_count: body.resolved_count,
+                settings_enabled: settings.enabled,
+                configured_model: preferredModel,
+                attempted_models: attemptedModels,
+                model_attempts: modelAttempts,
+                successful_model: null,
+                code: failure.code,
+                reason: failure.reason,
+                status: failure.status,
+                latency_ms: latencyMs,
+            });
+            responseBody = NextResponseSchema.parse({
+                ...decision,
+                host_message: settings.show_host_messages ? decision.host_message : "",
+                provider: "adaptive_fallback",
+                model: "local-adaptive-v1",
+                latency_ms: latencyMs,
+                fallback_used: true,
+                fallback_code: failure.code,
+                fallback_reason: failure.reason,
+                request_id: requestId,
+                api_version: API_VERSION,
+            });
+        }
+        if (settings.persist_events) {
+            await Promise.allSettled([
+                persistResolvedEvent(limitedBody),
+                persistDecision(limitedBody, responseBody),
+            ]);
+        }
+        return json(response, 200, responseBody);
+    }
+    catch (error) {
+        console.error(`[${requestId}]`, error);
+        if (error instanceof ZodError) {
+            return json(response, 422, {
+                error: "La solicitud no coincide con el contrato de la dirección adaptativa.",
+                code: "INVALID_REQUEST",
+                issues: validationIssues(error),
+                request_id: requestId,
+            });
+        }
+        if (error instanceof SyntaxError) {
+            return json(response, 400, {
+                error: "El cuerpo de la solicitud no contiene JSON válido.",
+                code: "INVALID_JSON",
+                request_id: requestId,
+            });
+        }
+        return json(response, 500, {
+            error: "No se pudo preparar la próxima carta.",
+            code: "INTERNAL_ERROR",
+            request_id: requestId,
+        });
+    }
+});
+server.listen(config.port, "0.0.0.0", () => {
+    console.log(`Dirección adaptativa ${API_VERSION} escuchando en el puerto ${config.port}.`);
+});
+function shutdown(signal) {
+    console.log(`${signal}: cerrando el servicio adaptativo.`);
+    server.close((error) => {
+        if (error) {
+            console.error("No se pudo cerrar el servidor limpiamente.", error);
+            process.exitCode = 1;
+        }
+        process.exit();
+    });
+    setTimeout(() => process.exit(1), 10_000).unref();
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+//# sourceMappingURL=server.js.map
