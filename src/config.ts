@@ -3,6 +3,7 @@ import { z } from "zod";
 const schema = z.object({
   OPENAI_API_KEY: z.string().optional().default(""),
   OPENAI_MODEL: z.string().min(1).default("gpt-5.2"),
+  OPENAI_FALLBACK_MODEL: z.string().min(1).default("gpt-5.2"),
   DIRECTUS_URL: z.string().url(),
   DIRECTUS_TOKEN: z.string().min(1),
   ALLOWED_ORIGINS: z.string().default("https://teanimas.com,https://census.ar"),
@@ -22,6 +23,7 @@ const parsed = schema.parse(process.env);
 export const config = {
   openaiApiKey: parsed.OPENAI_API_KEY,
   openaiModel: parsed.OPENAI_MODEL,
+  openaiFallbackModel: parsed.OPENAI_FALLBACK_MODEL,
   directusUrl: parsed.DIRECTUS_URL.replace(/\/+$/, ""),
   directusToken: parsed.DIRECTUS_TOKEN,
   allowedOrigins: new Set(
