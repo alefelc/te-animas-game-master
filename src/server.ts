@@ -20,7 +20,51 @@ import {
 } from "./directus.js";
 import { SlidingMinuteLimiter } from "./rate-limit.js";
 
+const API_VERSION = "1.5.2";
 const limiter = new SlidingMinuteLimiter(config.rateLimitPerMinute);
+
+interface FailureInfo {
+  code: string;
+  reason: string;
+  status: number | null;
+}
+
+interface LastAiAttempt {
+  state: "never" | "openai" | "local_fallback";
+  at: string | null;
+  request_id: string | null;
+  game_id: string | null;
+  settings_enabled: boolean | null;
+  configured_model: string | null;
+  attempted_models: string[];
+  successful_model: string | null;
+  code: string | null;
+  reason: string | null;
+  status: number | null;
+  latency_ms: number | null;
+}
+
+let lastAiAttempt: LastAiAttempt = {
+  state: "never",
+  at: null,
+  request_id: null,
+  game_id: null,
+  settings_enabled: null,
+  configured_model: null,
+  attempted_models: [],
+  successful_model: null,
+  code: null,
+  reason: null,
+  status: null,
+  latency_ms: null,
+};
+
+class AiDisabledError extends Error {
+  constructor() {
+    super("Dirección adaptativa desactivada en pc_ai_settings.");
+    this.name = "AiDisabledError";
+  }
+}
 
 function originAllowed(origin: string | undefined) {
   if (!origin) return true;
@@ -76,11 +120,62 @@ function errorStatus(error: unknown): number | null {
   return typeof status === "number" ? status : null;
 }
 
+function safeErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw.replace(/sk-[A-Za-z0-9_-]+/g, "[clave oculta]").slice(0, 500);
+}
+
+function classifyAiFailure(error: unknown): FailureInfo {
+  const status = errorStatus(error);
+  const reason = safeErrorMessage(error);
+  const lower = reason.toLowerCase();
+
+  if (error instanceof AiDisabledError || lower.includes("desactivada")) {
+    return { code: "AI_DISABLED", reason, status };
+  }
+
+  if (status === 401) return { code: "OPENAI_AUTH", reason, status };
+  if (status === 403) return { code: "OPENAI_ACCESS", reason, status };
+  if (status === 429) return { code: "OPENAI_RATE_LIMIT", reason, status };
+
+  if (
+    status === 404 ||
+    ((status === 400 || status === 403) &&
+      (lower.includes("model") || lower.includes("modelo")))
+  ) {
+    return { code: "OPENAI_MODEL", reason, status };
+  }
+
+  if (
+    status === 408 ||
+    lower.includes("timeout") ||
+    lower.includes("timed out") ||
+    lower.includes("abort")
+  ) {
+    return { code: "OPENAI_TIMEOUT", reason, status };
+  }
+
+  if (
+    lower.includes("network") ||
+    lower.includes("connection") ||
+    lower.includes("fetch") ||
+    lower.includes("econn")
+  ) {
+    return { code: "OPENAI_NETWORK", reason, status };
+  }
+
+  if (status !== null && status >= 500) {
+    return { code: "OPENAI_SERVER", reason, status };
+  }
+
+  return { code: "OPENAI_ERROR", reason, status };
+}
+
 function shouldTryFallbackModel(error: unknown): boolean {
   const status = errorStatus(error);
 
   // Una credencial inválida afectará a ambos modelos; no se duplica la espera.
-  if (status === 401) return false;
+  if (status === 401 || error instanceof AiDisabledError) return false;
 
   // Errores de modelo, saturación, red o servidor sí justifican probar otra IA.
   if (
@@ -95,7 +190,7 @@ function shouldTryFallbackModel(error: unknown): boolean {
     return true;
   }
 
-  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  const message = safeErrorMessage(error).toLowerCase();
   return (
     status === null ||
     message.includes("model") ||
@@ -124,6 +219,7 @@ const server = createServer(async (request, response) => {
     typeof request.headers.origin === "string"
       ? request.headers.origin
       : undefined;
+  const requestUrl = new URL(request.url ?? "/", "http://localhost");
 
   setCors(response, origin);
 
@@ -139,20 +235,36 @@ const server = createServer(async (request, response) => {
     return response.end();
   }
 
-  if (request.method === "GET" && request.url === "/health") {
+  if (request.method === "GET" && requestUrl.pathname === "/health") {
     return json(response, 200, {
       ok: true,
       game_master: true,
-      api_version: "1.5.1",
+      api_version: API_VERSION,
       request_contract: "v4-compatible",
       openai_configured: Boolean(config.openaiApiKey),
       primary_model: config.openaiModel,
       fallback_model: config.openaiFallbackModel,
       request_timeout_ms: config.requestTimeoutMs,
+      last_ai_attempt: lastAiAttempt,
     });
   }
 
-  if (request.method !== "POST" || request.url !== "/v1/game-master/next") {
+  if (request.method === "GET" && requestUrl.pathname === "/health/ai") {
+    return json(response, 200, {
+      ok: lastAiAttempt.state === "openai",
+      api_version: API_VERSION,
+      note:
+        lastAiAttempt.state === "never"
+          ? "Iniciá una partida y volvé a consultar este endpoint."
+          : "Este estado corresponde al último intento real de una partida.",
+      last_ai_attempt: lastAiAttempt,
+    });
+  }
+
+  if (
+    request.method !== "POST" ||
+    requestUrl.pathname !== "/v1/game-master/next"
+  ) {
     return json(response, 404, {
       error: "Ruta no encontrada.",
       request_id: requestId,
@@ -175,32 +287,34 @@ const server = createServer(async (request, response) => {
       ...body,
       candidates: body.candidates.slice(0, settings.candidate_limit),
     };
-
+    const preferredModel = (settings.model || config.openaiModel).trim();
+    const fallbackModel = config.openaiFallbackModel.trim();
+    const timeoutMs = Math.max(
+      settings.decision_timeout_ms || config.requestTimeoutMs,
+      config.requestTimeoutMs,
+    );
+    const attemptedModels: string[] = [];
+    let primaryFailure: FailureInfo | null = null;
     let responseBody: NextResponse;
 
     try {
       if (!settings.enabled) {
-        throw new Error(
-          "Dirección adaptativa desactivada en la configuración.",
-        );
+        throw new AiDisabledError();
       }
 
-      const preferredModel = (settings.model || config.openaiModel).trim();
-      const fallbackModel = config.openaiFallbackModel.trim();
-      const timeoutMs = Math.max(
-        settings.decision_timeout_ms || config.requestTimeoutMs,
-        config.requestTimeoutMs,
-      );
       let usedModel = preferredModel;
       let decision;
 
       try {
+        attemptedModels.push(preferredModel);
         decision = await chooseWithOpenAI(limitedBody, {
           model: preferredModel,
           timeoutMs,
           customPrompt: settings.director_prompt,
         });
       } catch (primaryError) {
+        primaryFailure = classifyAiFailure(primaryError);
+
         if (
           fallbackModel === preferredModel ||
           !shouldTryFallbackModel(primaryError)
@@ -213,6 +327,7 @@ const server = createServer(async (request, response) => {
           primaryError,
         );
         usedModel = fallbackModel;
+        attemptedModels.push(fallbackModel);
         decision = await chooseWithOpenAI(limitedBody, {
           model: fallbackModel,
           timeoutMs,
@@ -228,25 +343,64 @@ const server = createServer(async (request, response) => {
         throw new Error("El modelo eligió una carta fuera de la lista válida.");
       }
 
+      const latencyMs = Date.now() - startedAt;
+      lastAiAttempt = {
+        state: "openai",
+        at: new Date().toISOString(),
+        request_id: requestId,
+        game_id: body.game_id,
+        settings_enabled: settings.enabled,
+        configured_model: preferredModel,
+        attempted_models: attemptedModels,
+        successful_model: usedModel,
+        code: primaryFailure ? "RECOVERED_WITH_FALLBACK_MODEL" : null,
+        reason: primaryFailure?.reason ?? null,
+        status: primaryFailure?.status ?? null,
+        latency_ms: latencyMs,
+      };
+
       responseBody = NextResponseSchema.parse({
         ...decision,
         host_message: settings.show_host_messages ? decision.host_message : "",
         provider: "openai",
         model: usedModel,
-        latency_ms: Date.now() - startedAt,
+        latency_ms: latencyMs,
         fallback_used: false,
+        fallback_code: null,
+        fallback_reason: null,
       });
     } catch (error) {
-      console.warn(`[${requestId}] Se usó selección adaptativa local.`, error);
+      const failure = classifyAiFailure(error);
+      const latencyMs = Date.now() - startedAt;
+      console.warn(
+        `[${requestId}] Se usó selección adaptativa local (${failure.code}): ${failure.reason}`,
+      );
       const decision = chooseFallback(limitedBody);
+
+      lastAiAttempt = {
+        state: "local_fallback",
+        at: new Date().toISOString(),
+        request_id: requestId,
+        game_id: body.game_id,
+        settings_enabled: settings.enabled,
+        configured_model: preferredModel,
+        attempted_models: attemptedModels,
+        successful_model: null,
+        code: failure.code,
+        reason: failure.reason,
+        status: failure.status,
+        latency_ms: latencyMs,
+      };
 
       responseBody = NextResponseSchema.parse({
         ...decision,
         host_message: settings.show_host_messages ? decision.host_message : "",
         provider: "adaptive_fallback",
         model: "local-adaptive-v1",
-        latency_ms: Date.now() - startedAt,
+        latency_ms: latencyMs,
         fallback_used: true,
+        fallback_code: failure.code,
+        fallback_reason: failure.reason,
       });
     }
 
@@ -287,5 +441,5 @@ const server = createServer(async (request, response) => {
 });
 
 server.listen(config.port, "0.0.0.0", () => {
-  console.log(`Dirección adaptativa escuchando en el puerto ${config.port}.`);
+  console.log(`Dirección adaptativa ${API_VERSION} escuchando en el puerto ${config.port}.`);
 });
