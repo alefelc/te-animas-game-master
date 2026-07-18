@@ -2,13 +2,16 @@ import { createServer, } from "node:http";
 import { randomUUID } from "node:crypto";
 import { ZodError } from "zod";
 import { config } from "./config.js";
+import { patchAccount, putProfile, readAccountBundle, readProfile, registerAccount } from "./account.js";
 import { chooseFallback } from "./fallback.js";
 import { chooseWithOpenAI, probeOpenAIModel, } from "./openai-director.js";
 import { CandidateSchema, NextRequestSchema, NextResponseSchema, } from "./schemas.js";
-import { checkDirectusReady, diagnoseAiSettings, persistDecision, persistResolvedEvent, readAiSettings, } from "./directus.js";
+import { checkDirectusReady, DirectusRequestError, diagnoseAiSettings, persistDecision, persistResolvedEvent, readAiSettings, } from "./directus.js";
 import { SlidingMinuteLimiter } from "./rate-limit.js";
-const API_VERSION = "1.8.3";
+const API_VERSION = "1.9.1";
 const limiter = new SlidingMinuteLimiter(config.rateLimitPerMinute);
+const accountLimiter = new SlidingMinuteLimiter(config.accountRateLimitPerMinute);
+const registerLimiter = new SlidingMinuteLimiter(config.registerRateLimitPerMinute);
 const MAX_ATTEMPT_HISTORY = 20;
 const MAX_VALIDATION_HISTORY = 20;
 const recentValidationFailures = [];
@@ -92,7 +95,7 @@ function setCors(response, origin) {
         response.setHeader("Access-Control-Allow-Origin", origin);
     }
     response.setHeader("Vary", "Origin");
-    response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    response.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,PUT,DELETE,OPTIONS");
     response.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Game-Session, X-Game-Draw, X-Diagnostic-Token, Authorization");
     response.setHeader("Access-Control-Expose-Headers", "X-Request-ID, X-Game-Master-Version");
     response.setHeader("Access-Control-Max-Age", "600");
@@ -133,6 +136,89 @@ function diagnosticAuthorized(request) {
         ? authorization.slice(7).trim()
         : null;
     return direct === config.diagnosticToken || bearer === config.diagnosticToken;
+}
+function bearerToken(request) {
+    const authorization = headerValue(request, "authorization")?.trim();
+    if (!authorization)
+        return null;
+    const match = /^Bearer\s+(.+)$/i.exec(authorization);
+    return match?.[1]?.trim() || null;
+}
+function accountErrorResponse(response, requestId, error) {
+    if (error instanceof ZodError) {
+        return json(response, 422, {
+            error: "Los datos del perfil no son válidos.",
+            code: "INVALID_ACCOUNT_PAYLOAD",
+            issues: validationIssues(error),
+            request_id: requestId,
+        });
+    }
+    if (error instanceof DirectusRequestError) {
+        if ([401, 403].includes(error.status)) {
+            return json(response, 401, {
+                error: "La sesión venció o no es válida.",
+                code: "ACCOUNT_UNAUTHORIZED",
+                request_id: requestId,
+            });
+        }
+        if (error.status === 404) {
+            return json(response, 503, {
+                error: "El servicio de perfiles todavía no está instalado.",
+                code: "ACCOUNT_PROFILE_NOT_INSTALLED",
+                request_id: requestId,
+            });
+        }
+        if (error.status === 503 || error.code === "ACCOUNT_REGISTRATION_NOT_CONFIGURED") {
+            return json(response, 503, {
+                error: "El registro de cuentas todavía no está configurado en el servidor.",
+                code: "ACCOUNT_REGISTRATION_NOT_CONFIGURED",
+                request_id: requestId,
+            });
+        }
+    }
+    console.error(`[${requestId}] Error de cuenta`, error);
+    return json(response, 500, {
+        error: "No se pudo completar la operación de cuenta.",
+        code: "ACCOUNT_INTERNAL_ERROR",
+        request_id: requestId,
+    });
+}
+function registrationErrorResponse(response, requestId, error) {
+    if (error instanceof ZodError) {
+        return json(response, 422, {
+            error: "Revisá el nombre, apellido y email ingresados.",
+            code: "INVALID_REGISTRATION_PAYLOAD",
+            issues: validationIssues(error),
+            request_id: requestId,
+        });
+    }
+    if (error instanceof DirectusRequestError) {
+        if (error.code === "ACCOUNT_REGISTRATION_NOT_CONFIGURED" || error.status === 503) {
+            return json(response, 503, {
+                error: "El registro de cuentas todavía no está configurado en el servidor.",
+                code: "ACCOUNT_REGISTRATION_NOT_CONFIGURED",
+                request_id: requestId,
+            });
+        }
+        if ([400, 401, 403, 404, 422].includes(error.status)) {
+            console.error(`[${requestId}] Directus rechazó la invitación`, {
+                status: error.status,
+                code: error.code,
+                endpoint: error.endpoint,
+            });
+            return json(response, 503, {
+                error: "No se pudo emitir la invitación. Revisá la configuración de cuentas y correo del servidor.",
+                code: "ACCOUNT_INVITATION_UNAVAILABLE",
+                request_id: requestId,
+            });
+        }
+    }
+    console.error(`[${requestId}] Error de registro`, error);
+    return json(response, 500, {
+        error: "No se pudo completar el registro.",
+        code: "ACCOUNT_REGISTER_INTERNAL_ERROR",
+        request_id: requestId,
+    });
 }
 function diagnosticModels(configuredModel) {
     return [configuredModel, config.openaiModel, config.openaiFallbackModel]
@@ -341,6 +427,72 @@ const server = createServer(async (request, response) => {
             recent_summary: recentSummary,
             recent_ai_attempts: attemptHistory.slice(0, MAX_ATTEMPT_HISTORY),
         });
+    }
+    if (request.method === "POST" && requestUrl.pathname === "/v1/account/register") {
+        const key = clientKey(request);
+        if (!registerLimiter.allow(key)) {
+            return json(response, 429, {
+                error: "Demasiadas solicitudes de registro. Esperá unos minutos.",
+                code: "ACCOUNT_REGISTER_RATE_LIMIT",
+                request_id: requestId,
+            });
+        }
+        try {
+            const body = await readBody(request, 20_000);
+            await registerAccount(body);
+            return json(response, 202, {
+                data: { accepted: true },
+                message: "Si el email puede registrarse, recibirás una invitación para activar la cuenta.",
+            });
+        }
+        catch (error) {
+            return registrationErrorResponse(response, requestId, error);
+        }
+    }
+    if (requestUrl.pathname.startsWith("/v1/account/")) {
+        const token = bearerToken(request);
+        if (!token) {
+            return json(response, 401, {
+                error: "Falta el token de sesión.",
+                code: "ACCOUNT_UNAUTHORIZED",
+                request_id: requestId,
+            });
+        }
+        if (!accountLimiter.allow(`${clientKey(request)}:${token.slice(-16)}`)) {
+            return json(response, 429, {
+                error: "Demasiadas solicitudes de cuenta.",
+                code: "ACCOUNT_RATE_LIMIT",
+                request_id: requestId,
+            });
+        }
+        try {
+            if (request.method === "GET" && requestUrl.pathname === "/v1/account/me") {
+                const data = await readAccountBundle(token);
+                return json(response, 200, { data });
+            }
+            if (request.method === "PATCH" && requestUrl.pathname === "/v1/account/me") {
+                const body = await readBody(request, 20_000);
+                const user = await patchAccount(token, body);
+                return json(response, 200, { data: user });
+            }
+            if (request.method === "GET" && requestUrl.pathname === "/v1/account/profile") {
+                const profile = await readProfile(token);
+                return json(response, 200, { data: profile });
+            }
+            if (request.method === "PUT" && requestUrl.pathname === "/v1/account/profile") {
+                const body = await readBody(request, 100_000);
+                const profile = await putProfile(token, body);
+                return json(response, 200, { data: profile });
+            }
+            return json(response, 405, {
+                error: "Método no permitido para esta ruta de cuenta.",
+                code: "ACCOUNT_METHOD_NOT_ALLOWED",
+                request_id: requestId,
+            });
+        }
+        catch (error) {
+            return accountErrorResponse(response, requestId, error);
+        }
     }
     if (request.method === "GET" && requestUrl.pathname === "/diagnostics/contract") {
         if (!config.diagnosticToken) {

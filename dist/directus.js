@@ -1,7 +1,30 @@
 import { config } from "./config.js";
-async function request(endpoint, init = {}) {
+export class DirectusRequestError extends Error {
+    status;
+    code;
+    endpoint;
+    constructor(message, status, code, endpoint) {
+        super(message);
+        this.status = status;
+        this.code = code;
+        this.endpoint = endpoint;
+        this.name = "DirectusRequestError";
+    }
+}
+function directusError(payload, status, endpoint) {
+    const parsed = payload;
+    const first = parsed?.errors?.[0];
+    const message = typeof first?.message === "string" && first.message.trim()
+        ? first.message
+        : `Directus respondió HTTP ${status}.`;
+    const code = typeof first?.extensions?.code === "string"
+        ? first.extensions.code
+        : null;
+    return new DirectusRequestError(message, status, code, endpoint);
+}
+async function directusRequest(endpoint, init = {}, token = config.directusToken) {
     const headers = new Headers(init.headers);
-    headers.set("Authorization", `Bearer ${config.directusToken}`);
+    headers.set("Authorization", `Bearer ${token}`);
     headers.set("Accept", "application/json");
     if (init.body) {
         headers.set("Content-Type", "application/json; charset=utf-8");
@@ -20,17 +43,17 @@ async function request(endpoint, init = {}) {
         payload = text;
     }
     if (!response.ok) {
-        throw new Error(`Directus ${response.status}: ${JSON.stringify(payload).slice(0, 500)}`);
+        throw directusError(payload, response.status, endpoint);
     }
-    const wrapped = payload;
-    return (wrapped && typeof wrapped === "object" && "data" in wrapped
-        ? wrapped.data
-        : payload);
+    if (payload && typeof payload === "object" && "data" in payload) {
+        return payload.data;
+    }
+    return payload;
 }
 export async function checkDirectusReady() {
     const startedAt = Date.now();
     try {
-        await request("/users/me?fields=id", {
+        await directusRequest("/users/me?fields=id", {
             signal: AbortSignal.timeout(5_000),
         });
         return { ok: true, latency_ms: Date.now() - startedAt, reason: null };
@@ -41,6 +64,71 @@ export async function checkDirectusReady() {
             latency_ms: Date.now() - startedAt,
             reason: error instanceof Error ? error.message.slice(0, 300) : String(error),
         };
+    }
+}
+export async function authenticateAccountToken(accessToken) {
+    const result = await directusRequest("/users/me?fields=id", { signal: AbortSignal.timeout(7_000) }, accessToken);
+    if (!result?.id) {
+        throw new DirectusRequestError("Directus no identificó al usuario autenticado.", 401, "INVALID_CREDENTIALS", "/users/me");
+    }
+    return result.id;
+}
+export async function readAccountUser(userId) {
+    return directusRequest(`/users/${encodeURIComponent(userId)}?fields=id,email,first_name,last_name,status`, { signal: AbortSignal.timeout(7_000) });
+}
+export async function updateAccountUser(userId, data) {
+    return directusRequest(`/users/${encodeURIComponent(userId)}?fields=id,email,first_name,last_name,status`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+        signal: AbortSignal.timeout(7_000),
+    });
+}
+function profileQuery(userId) {
+    const params = new URLSearchParams({
+        fields: "id,user,preferences,date_created,date_updated",
+        limit: "1",
+        "filter[user][_eq]": userId,
+    });
+    return `/items/pc_user_profiles?${params.toString()}`;
+}
+export async function readAccountProfile(userId) {
+    const rows = await directusRequest(profileQuery(userId), {
+        signal: AbortSignal.timeout(7_000),
+    });
+    return rows[0] ?? null;
+}
+export async function saveAccountProfile(userId, preferences) {
+    const existing = await readAccountProfile(userId);
+    if (existing) {
+        return directusRequest(`/items/pc_user_profiles/${encodeURIComponent(String(existing.id))}?fields=id,user,preferences,date_created,date_updated`, {
+            method: "PATCH",
+            body: JSON.stringify({ preferences }),
+            signal: AbortSignal.timeout(7_000),
+        });
+    }
+    try {
+        return await directusRequest("/items/pc_user_profiles?fields=id,user,preferences,date_created,date_updated", {
+            method: "POST",
+            body: JSON.stringify({ user: userId, preferences }),
+            signal: AbortSignal.timeout(7_000),
+        });
+    }
+    catch (error) {
+        // Dos dispositivos pueden intentar crear el perfil por primera vez al mismo
+        // tiempo. La restricción UNIQUE en user evita duplicados; en ese caso se
+        // vuelve a leer y actualizar el registro ganador.
+        if (error instanceof DirectusRequestError &&
+            (error.code === "RECORD_NOT_UNIQUE" || error.status === 409)) {
+            const raced = await readAccountProfile(userId);
+            if (raced) {
+                return directusRequest(`/items/pc_user_profiles/${encodeURIComponent(String(raced.id))}?fields=id,user,preferences,date_created,date_updated`, {
+                    method: "PATCH",
+                    body: JSON.stringify({ preferences }),
+                    signal: AbortSignal.timeout(7_000),
+                });
+            }
+        }
+        throw error;
     }
 }
 const defaultSettings = {
@@ -68,7 +156,7 @@ export async function readAiSettings(gameId) {
             "filter[game][_eq]": gameId,
             "filter[status][_eq]": "published",
         });
-        const rows = await request(`/items/pc_ai_settings?${params.toString()}`);
+        const rows = await directusRequest(`/items/pc_ai_settings?${params.toString()}`);
         return {
             ...defaultSettings,
             ...(rows[0] ?? {}),
@@ -82,15 +170,17 @@ export async function readAiSettings(gameId) {
 }
 async function createIgnoringDuplicate(collection, body) {
     try {
-        await request(`/items/${collection}`, {
+        await directusRequest(`/items/${collection}`, {
             method: "POST",
             body: JSON.stringify(body),
         });
     }
     catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (!message.includes("RECORD_NOT_UNIQUE"))
-            throw error;
+        if (error instanceof DirectusRequestError &&
+            error.code === "RECORD_NOT_UNIQUE") {
+            return;
+        }
+        throw error;
     }
 }
 export async function persistResolvedEvent(requestBody) {
@@ -114,7 +204,7 @@ export async function persistResolvedEvent(requestBody) {
     });
 }
 export async function persistDecision(requestBody, response) {
-    await request("/items/pc_ai_decisions", {
+    await directusRequest("/items/pc_ai_decisions", {
         method: "POST",
         body: JSON.stringify({
             status: "published",
@@ -156,7 +246,7 @@ export async function diagnoseAiSettings(gameId) {
         });
         if (gameId)
             params.set("filter[game][_eq]", gameId);
-        const rows = await request(`/items/pc_ai_settings?${params.toString()}`);
+        const rows = await directusRequest(`/items/pc_ai_settings?${params.toString()}`);
         const row = rows[0];
         if (!row) {
             return {
@@ -191,5 +281,56 @@ export async function diagnoseAiSettings(gameId) {
             reason: error instanceof Error ? error.message.slice(0, 500) : String(error),
         };
     }
+}
+function usersByEmailQuery(email) {
+    const params = new URLSearchParams({
+        fields: "id,email,status,role",
+        limit: "1",
+        "filter[email][_eq]": email,
+    });
+    return `/users?${params.toString()}`;
+}
+export async function inviteAccountUser(input) {
+    if (!config.playerRoleId) {
+        throw new DirectusRequestError("PLAYER_ROLE_ID no está configurado en Game Master.", 503, "ACCOUNT_REGISTRATION_NOT_CONFIGURED", "/users/invite");
+    }
+    const email = input.email.trim().toLowerCase();
+    const existingRows = await directusRequest(usersByEmailQuery(email), {
+        signal: AbortSignal.timeout(7_000),
+    });
+    const existing = existingRows[0] ?? null;
+    // Respuesta deliberadamente neutra: no revelamos si el email ya existe.
+    if (existing && existing.status !== "invited")
+        return;
+    if (!existing) {
+        try {
+            await directusRequest("/users", {
+                method: "POST",
+                body: JSON.stringify({
+                    email,
+                    first_name: input.first_name.trim() || null,
+                    last_name: input.last_name.trim() || null,
+                    role: config.playerRoleId,
+                    status: "invited",
+                }),
+                signal: AbortSignal.timeout(7_000),
+            });
+        }
+        catch (error) {
+            // Dos solicitudes simultáneas pueden intentar crear el mismo email.
+            if (!(error instanceof DirectusRequestError) || (error.code !== "RECORD_NOT_UNIQUE" && error.status !== 409)) {
+                throw error;
+            }
+        }
+    }
+    await directusRequest("/users/invite", {
+        method: "POST",
+        body: JSON.stringify({
+            email,
+            role: config.playerRoleId,
+            invite_url: config.accountInviteUrl,
+        }),
+        signal: AbortSignal.timeout(10_000),
+    });
 }
 //# sourceMappingURL=directus.js.map

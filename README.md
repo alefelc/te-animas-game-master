@@ -1,51 +1,35 @@
-# ¿Te animás? — Dirección adaptativa 1.8.3
+# ¿Te animás? — Game Master API 1.9.1 R19
 
-API Node.js que selecciona la próxima carta con OpenAI y conserva un selector adaptativo local como recuperación controlada.
+API de dirección adaptativa y backend privado para cuentas/perfiles.
 
-## Comandos
+## Cuentas R19
 
-```bash
+- `POST /v1/account/register` recibe nombre, apellido y email.
+- El servidor usa su token privado para solicitar una invitación nativa a Directus.
+- La persona define su contraseña desde el enlace recibido.
+- Las rutas `/v1/account/me` y `/v1/account/profile` validan el token de sesión del jugador.
+- El navegador nunca accede directamente a `pc_user_profiles`.
+
+## Variables nuevas
+
+```env
+PLAYER_ROLE_ID=
+ACCOUNT_INVITE_URL=https://teanimas.com/?auth=accept-invite
+REGISTER_RATE_LIMIT_PER_MINUTE=3
+```
+
+`PLAYER_ROLE_ID` se genera con el instalador `directus-auth-r19`.
+
+`DIRECTUS_TOKEN` es privado y debe existir solamente en el servicio Game Master. No debe incluirse en el frontend ni en el repositorio.
+
+## Build
+
+```sh
 npm ci
-npm test
+npm test -- --run
 npm run build
-npm start
 ```
 
-## Endpoints
+## Salud
 
-- `GET /health`: proceso activo y diagnóstico del último intento.
-- `GET /ready`: comprueba conectividad y autenticación contra el servicio de contenido.
-- `GET /health/ai`: historial reciente de decisiones.
-- `POST /v1/game-master/next`: selecciona la próxima carta.
-
-## Variables
-
-Usar `.env.example`. `OPENAI_API_KEY` puede quedar vacío para pruebas: la API responderá con su selector adaptativo local y explicará el motivo en el diagnóstico.
-
-## Despliegue
-
-El contenedor escucha en el puerto `3000`. El healthcheck usa `/health`; para verificar que todas las dependencias estén disponibles usar `/ready`.
-
-## Importante para repositorios actualizados por “Add files via upload”
-
-La interfaz web de GitHub no elimina archivos antiguos. Esta revisión compila sólo `src/*.ts`, por lo que los restos viejos del frontend ya no rompen Docker. Para limpiar el repositorio definitivamente se incluye `LIMPIAR-RESTOS-FRONTEND.ps1`.
-
-Antes de publicar también puede ejecutarse `VALIDAR-BUILD-API.ps1` en Windows.
-
-Las credenciales (`OPENAI_API_KEY`, `DIRECTUS_TOKEN`, etc.) deben configurarse como variables de ejecución del servicio, nunca como argumentos de compilación del Dockerfile.
-
-## Contrato 1.8.3
-
-El contrato `v6-scene-role-normalized` no rechaza una solicitud por valores históricos o personalizados de `gm_scene_role`. Los alias se convierten y los valores desconocidos se infieren a partir del nivel, intensidad y puntajes de la carta.
-
-El endpoint protegido `GET /diagnostics/contract` informa:
-
-```json
-{
-  "request_contract": "v6-scene-role-normalized",
-  "scene_role_contract": {
-    "accepts_legacy_aliases": true,
-    "accepts_unknown_values": true
-  }
-}
-```
+`GET /health` debe informar `api_version: 1.9.1`.

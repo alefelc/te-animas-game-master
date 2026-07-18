@@ -17,6 +17,10 @@ const schema = z.object({
         .max(60000)
         .default(18000),
     RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(1000).default(60),
+    ACCOUNT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(1000).default(120),
+    REGISTER_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(60).default(3),
+    PLAYER_ROLE_ID: z.string().uuid().optional(),
+    ACCOUNT_INVITE_URL: z.string().url().default("https://teanimas.com/?auth=accept-invite"),
     LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 const parsed = schema.parse(process.env);
@@ -33,6 +37,10 @@ export const config = {
     port: parsed.PORT,
     requestTimeoutMs: parsed.REQUEST_TIMEOUT_MS,
     rateLimitPerMinute: parsed.RATE_LIMIT_PER_MINUTE,
+    accountRateLimitPerMinute: parsed.ACCOUNT_RATE_LIMIT_PER_MINUTE,
+    registerRateLimitPerMinute: parsed.REGISTER_RATE_LIMIT_PER_MINUTE,
+    playerRoleId: parsed.PLAYER_ROLE_ID ?? null,
+    accountInviteUrl: parsed.ACCOUNT_INVITE_URL,
     logLevel: parsed.LOG_LEVEL,
 };
 //# sourceMappingURL=config.js.map
