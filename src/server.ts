@@ -30,7 +30,7 @@ import {
 } from "./directus.js";
 import { SlidingMinuteLimiter } from "./rate-limit.js";
 
-const API_VERSION = "1.9.1";
+const API_VERSION = "1.10.0";
 const limiter = new SlidingMinuteLimiter(config.rateLimitPerMinute);
 const accountLimiter = new SlidingMinuteLimiter(config.accountRateLimitPerMinute);
 const registerLimiter = new SlidingMinuteLimiter(config.registerRateLimitPerMinute);

@@ -1,0 +1,8 @@
+GAME MASTER 1.10.0 R20
+
+- 13 archivos de prueba aprobados.
+- 33 pruebas aprobadas.
+- Build TypeScript aprobado.
+- Candidatas compatibles con inventario reciben prioridad explícita.
+- La fase peak prioriza penetración disponible sin saltarse la elegibilidad del frontend.
+- El fallback conserva penalización fuerte de cartas vistas y cambio de estilo.

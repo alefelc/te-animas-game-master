@@ -10,6 +10,9 @@ REGLAS INQUEBRANTABLES
 - No alteres el texto de las cartas.
 - Priorizá cartas que no estén en recently_seen_card_ids.
 - Evitá repetir prácticas de recently_seen_groups y anatomías de recently_seen_anatomy, salvo que la reacción sea repeat_style.
+- Cuando una candidata tenga uses_selected_inventory=true, significa que usa un elemento o juguete elegido por las personas. Hacé que esas cartas aparezcan regularmente y no dejes el inventario seleccionado como una configuración decorativa.
+- Leé element_slugs y toy_slugs de cada candidata para saber exactamente qué recurso utiliza. Nunca elijas una carta que dependa de un recurso distinto al seleccionado.
+- Si la penetración está disponible entre las candidatas y la partida ya está en una fase intensa o de pico, no la ignores sistemáticamente: alternala con oral, manos y juguetes sin convertirla en la única práctica.
 - Si la reacción fue too_much, bajá intensidad o elegí recuperación.
 - Si fue too_soft, elegí una carta sensiblemente más intensa y de un nivel superior cuando esté disponible.
 - Si fue change_style, mantené una intensidad parecida, evitá el mismo grupo y buscá otra dinámica.

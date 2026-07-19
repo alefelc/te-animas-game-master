@@ -65,6 +65,12 @@ function scoreCandidate(
   event: SessionEvent | null,
 ) {
   let score = 20 - Math.abs(candidate.intensity - target) * 4;
+  const candidateWeight = candidate.weight ?? 100;
+  score += Math.min(10, Math.max(0, candidateWeight / 100 - 1) * 3);
+
+  if (candidate.uses_selected_inventory) {
+    score += 8;
+  }
 
   if (
     event?.continuity_group &&
@@ -109,6 +115,7 @@ function scoreCandidate(
 
   if (phase === "peak") {
     score += candidate.gm_scene_role === "climax" ? 10 : 0;
+    score += candidate.contains_penetration ? 2.5 : 0;
   }
 
   if (phase === "warmup") {
