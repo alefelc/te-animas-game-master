@@ -1,40 +1,36 @@
-# ¿Te animás? — Game Master API 1.10.0 R20
+# ¿Te animás? — API 3.0.0-r1
 
-API de dirección adaptativa y backend privado para cuentas/perfiles.
+Servicio privado de dirección adaptativa, diagnóstico y cuentas/perfiles.
 
-## Cuentas y perfiles
+## Contrato
 
-- `POST /v1/account/register` recibe nombre, apellido y email.
-- El servidor usa su token privado para solicitar una invitación nativa a Directus.
-- La persona define su contraseña desde el enlace recibido.
-- Las rutas `/v1/account/me` y `/v1/account/profile` validan el token de sesión del jugador.
-- El navegador nunca accede directamente a `pc_user_profiles`.
+La API importa solicitudes, respuestas, candidatos y roles de escena desde `@te-animas/contracts`. No copies esos esquemas dentro de este paquete.
 
-## Variables nuevas
+## Seguridad
 
-```env
-PLAYER_ROLE_ID=
-ACCOUNT_INVITE_URL=https://teanimas.com/?auth=accept-invite
-REGISTER_RATE_LIMIT_PER_MINUTE=3
+- `DIRECTUS_TOKEN`, `OPENAI_API_KEY` y `DIAGNOSTIC_TOKEN` son secretos exclusivos del servidor.
+- La identidad del jugador se valida con su token; las operaciones administrativas usan el token privado del servicio.
+- Registro, cuentas y selección de cartas tienen límites de frecuencia independientes.
+- Los diagnósticos requieren `DIAGNOSTIC_TOKEN`.
+
+## Validación
+
+Desde la raíz:
+
+```bash
+npm run test:api
+npm run build:api
 ```
 
-`PLAYER_ROLE_ID` se genera con el instalador `directus-auth-r19`.
+Salud operativa:
 
-`DIRECTUS_TOKEN` es privado y debe existir solamente en el servicio Game Master. No debe incluirse en el frontend ni en el repositorio.
-
-
-## Selección R20
-
-Cada candidata puede informar sus elementos, juguetes y prácticas. La API prioriza el inventario elegido, conserva la penalización de cartas vistas y favorece penetración disponible durante el pico sin reintroducir cartas que el frontend haya excluido.
-
-## Build
-
-```sh
-npm ci
-npm test -- --run
-npm run build
+```text
+GET /health
+GET /ready
 ```
 
-## Salud
+`/health` informa `api_version: 3.0.0`.
 
-`GET /health` debe informar `api_version: 1.10.0`.
+## Docker
+
+Usar la raíz de la release como contexto y `te-animas-game-master-main/Dockerfile` como Dockerfile. Ver `../docs/DEPLOYMENT.md`.

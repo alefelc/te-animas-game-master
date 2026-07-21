@@ -1,6 +1,6 @@
 {
   "name": "te-animas-adaptive-api",
-  "version": "1.10.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -15,7 +15,8 @@
   },
   "dependencies": {
     "openai": "^6.0.0",
-    "zod": "4.4.3"
+    "zod": "4.4.3",
+    "@te-animas/contracts": "3.0.0"
   },
   "devDependencies": {
     "@types/node": "24.10.13",

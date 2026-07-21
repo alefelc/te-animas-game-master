@@ -1,34 +1,27 @@
-FROM node:22-alpine AS build
+# syntax=docker/dockerfile:1.7
+# Build context MUST be the release root; Dockerfile path: te-animas-game-master-main/Dockerfile.
+FROM node:22-bookworm-slim AS build
 WORKDIR /app
-
-ENV NPM_CONFIG_REGISTRY=https://registry.npmjs.org/ \
-    NPM_CONFIG_FETCH_RETRIES=5 \
-    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
-    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000
-
-COPY package*.json ./
+ENV NPM_CONFIG_AUDIT=false NPM_CONFIG_FUND=false NPM_CONFIG_UPDATE_NOTIFIER=false
+COPY package.json package-lock.json release.json ./
+COPY packages/contracts/package.json packages/contracts/tsconfig.json ./packages/contracts/
+COPY games-main/package.json ./games-main/
+COPY te-animas-game-master-main/package.json te-animas-game-master-main/tsconfig.json ./te-animas-game-master-main/
+COPY directus-installer/package.json ./directus-installer/
 RUN npm ci --no-audit --no-fund
+COPY packages/contracts ./packages/contracts
+COPY te-animas-game-master-main ./te-animas-game-master-main
+RUN npm run build:api && npm prune --omit=dev
 
-COPY tsconfig.json ./
-# La API usa solo los fuentes TypeScript planos de src/. Esto evita que
-# restos de un frontend antiguo dentro de subcarpetas entren al build.
-COPY src/*.ts ./src/
-RUN npm run build \
-    && npm prune --omit=dev \
-    && npm cache clean --force
-
-FROM node:22-alpine AS runtime
-LABEL org.opencontainers.image.title="te-animas-adaptive-api" \
-      org.opencontainers.image.version="1.10.0"
+FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
-ENV NODE_ENV=production
-
-COPY --from=build --chown=node:node /app/package*.json ./
-COPY --from=build --chown=node:node /app/node_modules ./node_modules
-COPY --from=build --chown=node:node /app/dist ./dist
-
+ENV NODE_ENV=production PORT=3000
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/packages/contracts ./packages/contracts
+COPY --from=build /app/te-animas-game-master-main/package.json ./te-animas-game-master-main/package.json
+COPY --from=build /app/te-animas-game-master-main/dist ./te-animas-game-master-main/dist
 USER node
 EXPOSE 3000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:3000/health || exit 1
-CMD ["node", "dist/server.js"]
+HEALTHCHECK --interval=30s --timeout=4s --start-period=15s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:3000/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "te-animas-game-master-main/dist/server.js"]
