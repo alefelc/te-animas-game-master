@@ -1,36 +1,13 @@
-# ¿Te animás? — API 3.0.0-r1
+# ¿Te animás? — Game Master para EasyPanel
 
-Servicio privado de dirección adaptativa, diagnóstico y cuentas/perfiles.
+Este directorio es un repositorio autónomo. Subí **su contenido** a la raíz del repositorio conectado al servicio `game-master`.
 
-## Contrato
+## EasyPanel
 
-La API importa solicitudes, respuestas, candidatos y roles de escena desde `@te-animas/contracts`. No copies esos esquemas dentro de este paquete.
+- Build method: Dockerfile
+- Dockerfile: `Dockerfile`
+- Build context: raíz del repositorio (`.`)
+- Puerto: `3000`
+- Healthcheck: `/ready`
 
-## Seguridad
-
-- `DIRECTUS_TOKEN`, `OPENAI_API_KEY` y `DIAGNOSTIC_TOKEN` son secretos exclusivos del servidor.
-- La identidad del jugador se valida con su token; las operaciones administrativas usan el token privado del servicio.
-- Registro, cuentas y selección de cartas tienen límites de frecuencia independientes.
-- Los diagnósticos requieren `DIAGNOSTIC_TOKEN`.
-
-## Validación
-
-Desde la raíz:
-
-```bash
-npm run test:api
-npm run build:api
-```
-
-Salud operativa:
-
-```text
-GET /health
-GET /ready
-```
-
-`/health` informa `api_version: 3.0.0`.
-
-## Docker
-
-Usar la raíz de la release como contexto y `te-animas-game-master-main/Dockerfile` como Dockerfile. Ver `../docs/DEPLOYMENT.md`.
+Las credenciales y tokens deben configurarse como variables de entorno de ejecución, no como build arguments.
