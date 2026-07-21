@@ -6,22 +6,27 @@
   "engines": {
     "node": ">=22.12"
   },
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc -p tsconfig.json",
+    "build:domain": "npm run build --workspace @te-animas/game-domain",
+    "build:contracts": "npm run build:domain && npm run build --workspace @te-animas/contracts",
+    "build": "npm run build:contracts && tsc -p tsconfig.json",
     "start": "node dist/server.js",
-    "test": "vitest run --config vitest.config.ts",
+    "test": "npm run build:contracts && vitest run --config vitest.config.ts",
     "check": "npm run test && npm run build"
   },
   "dependencies": {
-    "openai": "^6.0.0",
+    "openai": "6.0.0",
     "zod": "4.4.3",
     "@te-animas/contracts": "4.0.0",
     "@te-animas/game-domain": "4.0.0"
   },
   "devDependencies": {
     "@types/node": "24.10.13",
-    "tsx": "^4.20.0",
+    "tsx": "4.20.0",
     "typescript": "6.0.3",
     "vitest": "4.1.10"
   }
