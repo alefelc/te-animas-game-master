@@ -1,9 +1,0 @@
-GAME MASTER 1.9.1 R19
-
-- 13 archivos de prueba aprobados.
-- 33 pruebas aprobadas.
-- Build TypeScript aprobado.
-- Registro por invitación probado.
-- Respuesta neutra para emails ya existentes probada.
-- El token del jugador se usa únicamente para identificar la sesión.
-- Los datos de usuario y perfil se leen con el token privado del servidor.
