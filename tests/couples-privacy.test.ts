@@ -22,8 +22,29 @@ function requestDetails(input: string | URL | Request, init?: RequestInit) {
   return { url, headers, body, method: init?.method ?? "GET" };
 }
 
-describe("vinculación privada de pareja", () => {
-  it("guarda únicamente el hash del código de invitación", async () => {
+function profile(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "profile-1",
+    user: "user-1",
+    preferences: null,
+    couple_id: null,
+    partner_user: null,
+    couple_role: null,
+    couple_status: null,
+    linked_at: null,
+    shared_preferences: null,
+    couple_signals: null,
+    couple_history: null,
+    invite_code_hash: null,
+    invite_expires_at: null,
+    invite_status: null,
+    invite_used_by: null,
+    ...overrides,
+  };
+}
+
+describe("vinculación privada compacta de pareja", () => {
+  it("guarda únicamente el hash del código dentro del perfil existente", async () => {
     const calls: Array<ReturnType<typeof requestDetails>> = [];
     vi.stubGlobal("fetch", vi.fn(async (input, init) => {
       const call = requestDetails(input, init);
@@ -31,14 +52,11 @@ describe("vinculación privada de pareja", () => {
       if (call.url.pathname === "/users/me") {
         return Response.json({ data: { id: "user-1" } });
       }
-      if (call.url.pathname === "/items/pc_couple_members") {
-        return Response.json({ data: [] });
+      if (call.url.pathname === "/items/pc_user_profiles" && call.method === "GET") {
+        return Response.json({ data: [profile()] });
       }
-      if (call.url.pathname === "/items/pc_couple_invites" && call.method === "GET") {
-        return Response.json({ data: [] });
-      }
-      if (call.url.pathname === "/items/pc_couple_invites" && call.method === "POST") {
-        return Response.json({ data: call.body });
+      if (call.url.pathname === "/items/pc_user_profiles/profile-1" && call.method === "PATCH") {
+        return Response.json({ data: profile(call.body) });
       }
       return Response.json({ errors: [{ message: "Ruta inesperada" }] }, { status: 404 });
     }));
@@ -46,16 +64,17 @@ describe("vinculación privada de pareja", () => {
     const { createCoupleInvite } = await import("../src/couples.js");
     const invite = await createCoupleInvite("player-token", { expires_in_days: 3 });
     const stored = calls.find(
-      (call) => call.url.pathname === "/items/pc_couple_invites" && call.method === "POST",
-    )?.body as { code_hash?: string } | undefined;
+      (call) => call.url.pathname === "/items/pc_user_profiles/profile-1" && call.method === "PATCH",
+    )?.body as { invite_code_hash?: string } | undefined;
 
     expect(invite.code).toMatch(/^[A-Za-z0-9_-]{30,}$/);
-    expect(stored?.code_hash).toMatch(/^[a-f0-9]{64}$/);
-    expect(stored?.code_hash).not.toContain(invite.code);
+    expect(stored?.invite_code_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(stored?.invite_code_hash).not.toContain(invite.code);
     expect(JSON.stringify(stored)).not.toContain(invite.code);
     expect(invite.link).toContain(encodeURIComponent(invite.code));
     expect(calls[0]?.headers.get("Authorization")).toBe("Bearer player-token");
     expect(calls.slice(1).every((call) => call.headers.get("Authorization") === "Bearer server-token")).toBe(true);
+    expect(calls.some((call) => call.url.pathname.includes("pc_couple_"))).toBe(false);
   });
 
   it("revela solo coincidencias positivas y nunca las respuestas privadas", async () => {
@@ -64,23 +83,37 @@ describe("vinculación privada de pareja", () => {
       if (call.url.pathname === "/users/me") {
         return Response.json({ data: { id: "user-1" } });
       }
-      if (call.url.pathname === "/items/pc_couple_members") {
-        return Response.json({
-          data: [{ id: "m1", couple: "couple-1", user: "user-1", role: "owner" }],
-        });
-      }
-      if (call.url.pathname === "/items/pc_couple_card_signals") {
-        return Response.json({
-          data: [
-            { id: "1", couple: "couple-1", user: "user-1", card_id: "card-negative", response: "interested", date_updated: "2026-07-20T10:00:00Z" },
-            { id: "2", couple: "couple-1", user: "user-2", card_id: "card-negative", response: "no", date_updated: "2026-07-20T10:01:00Z" },
-            { id: "3", couple: "couple-1", user: "user-1", card_id: "card-talk", response: "maybe", date_updated: "2026-07-20T10:02:00Z" },
-            { id: "4", couple: "couple-1", user: "user-2", card_id: "card-talk", response: "interested", date_updated: "2026-07-20T10:03:00Z" },
-            { id: "5", couple: "couple-1", user: "user-1", card_id: "card-match", response: "favorite", date_updated: "2026-07-20T10:04:00Z" },
-            { id: "6", couple: "couple-1", user: "user-2", card_id: "card-match", response: "repeat", date_updated: "2026-07-20T10:05:00Z" },
-            { id: "7", couple: "couple-1", user: "user-1", card_id: "card-pending", response: "interested", date_updated: "2026-07-20T10:06:00Z" },
-          ],
-        });
+      if (call.url.pathname === "/items/pc_user_profiles") {
+        const user = call.url.searchParams.get("filter[user][_eq]");
+        if (user === "user-1") {
+          return Response.json({ data: [profile({
+            couple_id: "couple-1",
+            partner_user: "user-2",
+            couple_role: "owner",
+            couple_status: "active",
+            couple_signals: {
+              "card-negative": { response: "interested", updated_at: "2026-07-20T10:00:00Z" },
+              "card-talk": { response: "maybe", updated_at: "2026-07-20T10:02:00Z" },
+              "card-match": { response: "favorite", updated_at: "2026-07-20T10:04:00Z" },
+              "card-pending": { response: "interested", updated_at: "2026-07-20T10:06:00Z" },
+            },
+          })] });
+        }
+        if (user === "user-2") {
+          return Response.json({ data: [profile({
+            id: "profile-2",
+            user: "user-2",
+            couple_id: "couple-1",
+            partner_user: "user-1",
+            couple_role: "partner",
+            couple_status: "active",
+            couple_signals: {
+              "card-negative": { response: "no", updated_at: "2026-07-20T10:01:00Z" },
+              "card-talk": { response: "interested", updated_at: "2026-07-20T10:03:00Z" },
+              "card-match": { response: "repeat", updated_at: "2026-07-20T10:05:00Z" },
+            },
+          })] });
+        }
       }
       return Response.json({ errors: [{ message: "Ruta inesperada" }] }, { status: 404 });
     }));
@@ -96,25 +129,25 @@ describe("vinculación privada de pareja", () => {
     expect(JSON.stringify(result)).not.toContain('"response"');
   });
 
-  it("no convierte un fallo real de actualización en una creación duplicada", async () => {
+  it("propaga un fallo real al guardar una señal sin crear registros alternativos", async () => {
     const methods: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input, init) => {
       const call = requestDetails(input, init);
       if (call.url.pathname === "/users/me") {
         return Response.json({ data: { id: "user-1" } });
       }
-      if (call.url.pathname === "/items/pc_couple_members") {
-        return Response.json({
-          data: [{ id: "m1", couple: "couple-1", user: "user-1", role: "owner" }],
-        });
+      if (call.url.pathname === "/items/pc_user_profiles" && call.method === "GET") {
+        return Response.json({ data: [profile({
+          couple_id: "couple-1",
+          partner_user: "user-2",
+          couple_role: "owner",
+          couple_status: "active",
+          couple_signals: {},
+        })] });
       }
-      if (call.url.pathname.startsWith("/items/pc_couple_card_signals/")) {
+      if (call.url.pathname === "/items/pc_user_profiles/profile-1") {
         methods.push(call.method);
         return Response.json({ errors: [{ message: "Database unavailable" }] }, { status: 503 });
-      }
-      if (call.url.pathname === "/items/pc_couple_card_signals") {
-        methods.push(call.method);
-        return Response.json({ data: call.body });
       }
       return Response.json({ errors: [{ message: "Ruta inesperada" }] }, { status: 404 });
     }));
