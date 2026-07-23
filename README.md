@@ -1,4 +1,4 @@
-# API privada 5.0.0-r1
+# API privada 5.0.0-r2
 
 Servicio de dirección adaptativa, cuentas, perfiles y vinculación privada de pareja.
 

@@ -16,8 +16,11 @@ COPY te-animas-game-master-main ./te-animas-game-master-main
 RUN npm run build:api && npm prune --omit=dev
 
 FROM node:22-bookworm-slim AS runtime
+ARG BUILD_RELEASE=5.0.0-r2
+LABEL org.opencontainers.image.title="¿Te animás? Game Master" \
+      org.opencontainers.image.version=${BUILD_RELEASE}
 WORKDIR /app
-ENV NODE_ENV=production PORT=3000
+ENV NODE_ENV=production PORT=3000 BUILD_RELEASE=${BUILD_RELEASE}
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages/game-domain ./packages/game-domain
 COPY --from=build /app/packages/contracts ./packages/contracts
