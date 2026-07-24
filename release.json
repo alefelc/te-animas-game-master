@@ -1,8 +1,0 @@
-{
-  "product": "¿Te animás? Game Master",
-  "version": "5.0.0-r4",
-  "deployment": "easypanel-standalone-root",
-  "schema_strategy": "compact-couple-storage",
-  "node": "22",
-  "port": 3000
-}
