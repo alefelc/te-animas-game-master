@@ -1,0 +1,7 @@
+{
+  "product": "¿Te animás? Game Master",
+  "version": "5.0.0-r3",
+  "deployment": "easypanel-standalone-root",
+  "node": "22",
+  "port": 3000
+}
