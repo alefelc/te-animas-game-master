@@ -1,0 +1,20 @@
+{
+  "name": "te-animas-game-master-deployment",
+  "version": "5.0.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "workspaces": [
+    "packages/*",
+    "te-animas-game-master-main"
+  ],
+  "scripts": {
+    "build:domain": "npm run build --workspace @te-animas/game-domain",
+    "build:contracts": "npm run build:domain && npm run build --workspace @te-animas/contracts",
+    "build:api": "npm run build:contracts && npm run build --workspace te-animas-adaptive-api",
+    "build": "npm run build:api",
+    "start": "npm run start --workspace te-animas-adaptive-api"
+  }
+}
