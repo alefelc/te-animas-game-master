@@ -78,31 +78,25 @@ interface InviteRow {
   inviter_user: string;
   code_hash: string;
   expires_at: string;
-  status: "pending" | "accepted" | "revoked" | "expired";
+  status: "pending" | "claiming" | "accepted" | "revoked" | "expired";
   used_by: string | null;
-}
-interface InviteClaimRow {
-  id: string;
-  invite: string;
-  accepter_user: string;
-  status: "claimed" | "completed" | "failed";
   claimed_at?: string | null;
 }
 interface SignalRow {
   id: string;
   couple: string;
   user: string;
-  card_id: string;
-  response: z.infer<typeof SignalInputSchema>["response"];
-  date_updated?: string | null;
+  card: string;
+  result: z.infer<typeof SignalInputSchema>["response"];
+  created_at?: string | null;
 }
 interface HistoryRow {
   id: string;
   couple: string;
   session_id: string;
-  summary: z.infer<typeof HistorySummarySchema> | null;
-  created_by: string;
-  date_created?: string | null;
+  payload: z.infer<typeof HistorySummarySchema> | null;
+  user: string;
+  created_at?: string | null;
 }
 
 export class CoupleError extends Error {
@@ -259,6 +253,7 @@ export async function createCoupleInvite(accessToken: string, raw: unknown) {
       expires_at: expiresAt,
       status: "pending",
       used_by: null,
+      claimed_at: null,
     }),
   });
 
@@ -271,31 +266,40 @@ export async function createCoupleInvite(accessToken: string, raw: unknown) {
   };
 }
 
-async function claimInvite(invite: InviteRow, accepterId: string) {
-  const claimId = stableRecordId("invite-claim", invite.id);
-  const payload: InviteClaimRow = {
-    id: claimId,
-    invite: invite.id,
-    accepter_user: accepterId,
-    status: "claimed",
-    claimed_at: new Date().toISOString(),
-  };
-
-  try {
-    await directusAdminRequest<InviteClaimRow>("/items/pc_couple_invite_claims", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-  } catch (error) {
-    if (!isUniqueConflict(error)) throw error;
-    const existing = await directusAdminRequest<InviteClaimRow>(
-      `/items/pc_couple_invite_claims/${claimId}?fields=id,invite,accepter_user,status,claimed_at`,
-    );
-    if (existing.accepter_user !== accepterId) {
-      throw new CoupleError("La invitación ya está siendo utilizada.", 409, "COUPLE_INVITE_CLAIMED");
-    }
+async function claimInvite(invite: InviteRow, accepterId: string): Promise<InviteRow> {
+  if (invite.status === "claiming" || invite.status === "accepted") {
+    if (invite.used_by === accepterId) return invite;
+    throw new CoupleError("La invitación ya está siendo utilizada.", 409, "COUPLE_INVITE_CLAIMED");
   }
-  return claimId;
+  if (invite.status !== "pending") {
+    throw new CoupleError("El código no es válido o ya fue usado.", 404, "COUPLE_INVITE_INVALID");
+  }
+
+  const claimedAt = new Date().toISOString();
+  const params = new URLSearchParams({
+    fields: fields(["id", "inviter_user", "code_hash", "expires_at", "status", "used_by", "claimed_at"]),
+    "filter[id][_eq]": invite.id,
+    "filter[status][_eq]": "pending",
+  });
+  const updated = await directusAdminRequest<InviteRow[]>(`/items/pc_couple_invites?${params}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      status: "claiming",
+      used_by: accepterId,
+      claimed_at: claimedAt,
+    }),
+  });
+  if (Array.isArray(updated) && updated.length === 1) return updated[0]!;
+
+  const current = await directusAdminRequest<InviteRow>(
+    `/items/pc_couple_invites/${encodeURIComponent(invite.id)}?fields=${encodeURIComponent(
+      fields(["id", "inviter_user", "code_hash", "expires_at", "status", "used_by", "claimed_at"]),
+    )}`,
+  );
+  if ((current.status === "claiming" || current.status === "accepted") && current.used_by === accepterId) {
+    return current;
+  }
+  throw new CoupleError("La invitación ya está siendo utilizada.", 409, "COUPLE_INVITE_CLAIMED");
 }
 
 async function createMemberIdempotently(payload: MemberRow) {
@@ -316,16 +320,11 @@ async function createMemberIdempotently(payload: MemberRow) {
 export async function acceptCoupleInvite(accessToken: string, raw: unknown) {
   const input = LinkInputSchema.parse(raw);
   const accepterId = await authenticateAccountToken(accessToken);
-  if (await membershipForUser(accepterId)) {
-    throw new CoupleError("Ya tenés una pareja vinculada.", 409, "COUPLE_ALREADY_LINKED");
-  }
-
   const requestedHash = hashInviteCode(input.code);
   const params = new URLSearchParams({
-    fields: fields(["id", "inviter_user", "code_hash", "expires_at", "status", "used_by"]),
+    fields: fields(["id", "inviter_user", "code_hash", "expires_at", "status", "used_by", "claimed_at"]),
     limit: "1",
     "filter[code_hash][_eq]": requestedHash,
-    "filter[status][_eq]": "pending",
   });
   const invites = await directusAdminRequest<InviteRow[]>(`/items/pc_couple_invites?${params}`);
   const invite = invites[0];
@@ -335,6 +334,25 @@ export async function acceptCoupleInvite(accessToken: string, raw: unknown) {
   if (invite.inviter_user === accepterId) {
     throw new CoupleError("No podés vincularte con tu propia invitación.", 409, "COUPLE_SELF_LINK");
   }
+
+  const coupleId = stableRecordId("couple", invite.id);
+  const existingMembership = await membershipForUser(accepterId);
+  if (existingMembership) {
+    if (
+      existingMembership.couple === coupleId &&
+      invite.used_by === accepterId &&
+      (invite.status === "claiming" || invite.status === "accepted")
+    ) {
+      return bundleForUser(accepterId);
+    }
+    throw new CoupleError("Ya tenés una pareja vinculada.", 409, "COUPLE_ALREADY_LINKED");
+  }
+  if (invite.status === "accepted" || (invite.status === "claiming" && invite.used_by !== accepterId)) {
+    throw new CoupleError("La invitación ya está siendo utilizada.", 409, "COUPLE_INVITE_CLAIMED");
+  }
+  if (invite.status !== "pending" && invite.status !== "claiming") {
+    throw new CoupleError("El código no es válido o ya fue usado.", 404, "COUPLE_INVITE_INVALID");
+  }
   if (Date.parse(invite.expires_at) <= Date.now()) {
     await directusAdminRequest(`/items/pc_couple_invites/${encodeURIComponent(invite.id)}`, {
       method: "PATCH",
@@ -343,72 +361,55 @@ export async function acceptCoupleInvite(accessToken: string, raw: unknown) {
     throw new CoupleError("La invitación venció.", 410, "COUPLE_INVITE_EXPIRED");
   }
 
-  const claimId = await claimInvite(invite, accepterId);
-  const coupleId = stableRecordId("couple", invite.id);
-  const joinedAt = new Date().toISOString();
+  const claimed = await claimInvite(invite, accepterId);
+  const joinedAt = claimed.claimed_at ?? new Date().toISOString();
+
+  const inviterMembership = await membershipForUser(invite.inviter_user);
+  if (inviterMembership && inviterMembership.couple !== coupleId) {
+    throw new CoupleError("La invitación ya no está disponible.", 409, "COUPLE_INVITER_ALREADY_LINKED");
+  }
+  const accepterMembership = await membershipForUser(accepterId);
+  if (accepterMembership && accepterMembership.couple !== coupleId) {
+    throw new CoupleError("Ya tenés una pareja vinculada.", 409, "COUPLE_ALREADY_LINKED");
+  }
 
   try {
-    const inviterMembership = await membershipForUser(invite.inviter_user);
-    if (inviterMembership && inviterMembership.couple !== coupleId) {
-      throw new CoupleError("La invitación ya no está disponible.", 409, "COUPLE_INVITER_ALREADY_LINKED");
-    }
-    const accepterMembership = await membershipForUser(accepterId);
-    if (accepterMembership && accepterMembership.couple !== coupleId) {
-      throw new CoupleError("Ya tenés una pareja vinculada.", 409, "COUPLE_ALREADY_LINKED");
-    }
-
-    try {
-      await directusAdminRequest<CoupleRow>("/items/pc_couples", {
-        method: "POST",
-        body: JSON.stringify({
-          id: coupleId,
-          status: "active",
-          created_by: invite.inviter_user,
-          source_invite: invite.id,
-          shared_preferences: null,
-          preferences_revision: 0,
-        }),
-      });
-    } catch (error) {
-      if (!isUniqueConflict(error)) throw error;
-      const existing = await coupleById(coupleId);
-      if (existing.source_invite && existing.source_invite !== invite.id) throw error;
-    }
-
-    await createMemberIdempotently({
-      id: stableRecordId("member", coupleId, invite.inviter_user),
-      couple: coupleId,
-      user: invite.inviter_user,
-      role: "owner",
-      joined_at: joinedAt,
-    });
-    await createMemberIdempotently({
-      id: stableRecordId("member", coupleId, accepterId),
-      couple: coupleId,
-      user: accepterId,
-      role: "partner",
-      joined_at: joinedAt,
-    });
-
-    await directusAdminRequest(`/items/pc_couple_invites/${encodeURIComponent(invite.id)}`, {
-      method: "PATCH",
-      body: JSON.stringify({ status: "accepted", used_by: accepterId }),
-    });
-    await directusAdminRequest(`/items/pc_couple_invite_claims/${claimId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ status: "completed" }),
+    await directusAdminRequest<CoupleRow>("/items/pc_couples", {
+      method: "POST",
+      body: JSON.stringify({
+        id: coupleId,
+        status: "active",
+        created_by: invite.inviter_user,
+        source_invite: invite.id,
+        shared_preferences: null,
+        preferences_revision: 0,
+      }),
     });
   } catch (error) {
-    await Promise.allSettled([
-      directusAdminRequest(`/items/pc_couple_invite_claims/${claimId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ status: "failed" }),
-      }),
-    ]);
-    // No se destruyen registros parciales: IDs deterministas permiten reintentar
-    // de forma idempotente sin que una solicitud concurrente borre el vínculo ganador.
-    throw error;
+    if (!isUniqueConflict(error)) throw error;
+    const existing = await coupleById(coupleId);
+    if (existing.source_invite && existing.source_invite !== invite.id) throw error;
   }
+
+  await createMemberIdempotently({
+    id: stableRecordId("member", coupleId, invite.inviter_user),
+    couple: coupleId,
+    user: invite.inviter_user,
+    role: "owner",
+    joined_at: joinedAt,
+  });
+  await createMemberIdempotently({
+    id: stableRecordId("member", coupleId, accepterId),
+    couple: coupleId,
+    user: accepterId,
+    role: "partner",
+    joined_at: joinedAt,
+  });
+
+  await directusAdminRequest(`/items/pc_couple_invites/${encodeURIComponent(invite.id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status: "accepted", used_by: accepterId, claimed_at: joinedAt }),
+  });
   return bundleForUser(accepterId);
 }
 
@@ -463,12 +464,14 @@ async function deleteRows(collection: string, rows: Array<{ id: string }>) {
           method: "DELETE",
         });
       } catch (error) {
-        // La eliminación es idempotente: una fila ya ausente no es un fallo.
         if (!(error instanceof DirectusRequestError) || error.status !== 404) throw error;
       }
     }),
   );
 }
+
+const coupleSignalEvent = "couple_card_signal";
+const coupleHistoryEvent = "couple_session_history";
 
 export async function unlinkCouple(accessToken: string) {
   const userId = await authenticateAccountToken(accessToken);
@@ -480,14 +483,10 @@ export async function unlinkCouple(accessToken: string) {
   });
 
   const members = await membersForCouple(coupleId);
-  const [signals, sessions] = await Promise.all([
-    listIds(`/items/pc_couple_card_signals?fields=id&limit=-1&filter[couple][_eq]=${encodeURIComponent(coupleId)}`),
-    listIds(`/items/pc_couple_sessions?fields=id&limit=-1&filter[couple][_eq]=${encodeURIComponent(coupleId)}`),
-  ]);
-  await Promise.all([
-    deleteRows("pc_couple_card_signals", signals),
-    deleteRows("pc_couple_sessions", sessions),
-  ]);
+  const privateEvents = await listIds(
+    `/items/pc_ai_session_events?fields=id&limit=-1&filter[couple][_eq]=${encodeURIComponent(coupleId)}`,
+  );
+  await deleteRows("pc_ai_session_events", privateEvents);
 
   const inviteGroups = await Promise.all(
     members.flatMap((member) => [
@@ -496,14 +495,6 @@ export async function unlinkCouple(accessToken: string) {
     ]),
   );
   const invites = [...new Map(inviteGroups.flat().map((row) => [row.id, row])).values()];
-  const claims = (
-    await Promise.all(
-      invites.map((invite) =>
-        listIds(`/items/pc_couple_invite_claims?fields=id&limit=-1&filter[invite][_eq]=${encodeURIComponent(invite.id)}`),
-      ),
-    )
-  ).flat();
-  await deleteRows("pc_couple_invite_claims", claims);
   await deleteRows("pc_couple_invites", invites);
   await deleteRows("pc_couple_members", members);
 
@@ -518,28 +509,56 @@ export async function unlinkCouple(accessToken: string) {
   return { unlinked: true, private_data_deleted: true };
 }
 
+function signalPayload(
+  id: string,
+  coupleId: string,
+  userId: string,
+  cardId: string,
+  response: z.infer<typeof SignalInputSchema>["response"],
+  createdAt: string,
+) {
+  return {
+    id,
+    status: "published",
+    game: config.gameId,
+    session_id: `signal:${cardId}`,
+    event_type: coupleSignalEvent,
+    card: cardId,
+    player_index: 0,
+    result: response,
+    reaction: null,
+    phase: null,
+    intensity: 0,
+    payload: null,
+    couple: coupleId,
+    user: userId,
+    created_at: createdAt,
+  };
+}
+
 export async function putCardSignal(accessToken: string, cardIdRaw: string, raw: unknown) {
   const cardId = z.string().trim().uuid().parse(cardIdRaw);
   const input = SignalInputSchema.parse(raw);
   const userId = await authenticateAccountToken(accessToken);
   const member = await requireActiveMembership(userId);
   const id = stableRecordId("signal", member.couple, userId, cardId);
-  const payload = { id, couple: member.couple, user: userId, card_id: cardId, response: input.response };
+  const payload = signalPayload(id, member.couple, userId, cardId, input.response, new Date().toISOString());
+
   try {
-    await directusAdminRequest(`/items/pc_couple_card_signals/${id}`, {
+    await directusAdminRequest(`/items/pc_ai_session_events/${id}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
     });
   } catch (error) {
     if (!(error instanceof DirectusRequestError) || error.status !== 404) throw error;
     try {
-      await directusAdminRequest("/items/pc_couple_card_signals", {
+      await directusAdminRequest("/items/pc_ai_session_events", {
         method: "POST",
         body: JSON.stringify(payload),
       });
     } catch (createError) {
       if (!isUniqueConflict(createError)) throw createError;
-      await directusAdminRequest(`/items/pc_couple_card_signals/${id}`, {
+      await directusAdminRequest(`/items/pc_ai_session_events/${id}`, {
         method: "PATCH",
         body: JSON.stringify(payload),
       });
@@ -555,17 +574,19 @@ export async function readOwnCardSignal(accessToken: string, cardIdRaw: string) 
   const id = stableRecordId("signal", member.couple, userId, cardId);
   try {
     const row = await directusAdminRequest<SignalRow>(
-      `/items/pc_couple_card_signals/${id}?fields=id,card_id,response,date_updated`,
+      `/items/pc_ai_session_events/${id}?fields=id,couple,user,card,result,created_at`,
     );
-    return { card_id: row.card_id, response: row.response, updated_at: row.date_updated ?? null };
+    if (row.couple !== member.couple || row.user !== userId) return null;
+    return { card_id: row.card, response: row.result, updated_at: row.created_at ?? null };
   } catch (error) {
     if (error instanceof DirectusRequestError && error.status === 404) return null;
     throw error;
   }
 }
 
-const strongPositive = new Set<SignalRow["response"]>(["interested", "repeat", "favorite"]);
-const discussPositive = new Set<SignalRow["response"]>(["maybe", "talk", "later"]);
+const strongPositive = new Set<SignalRow["result"]>(["interested", "repeat", "favorite"]);
+const discussPositive = new Set<SignalRow["result"]>(["maybe", "talk", "later"]);
+
 export async function readPrivateMatches(accessToken: string) {
   const userId = await authenticateAccountToken(accessToken);
   const member = await requireActiveMembership(userId);
@@ -573,28 +594,54 @@ export async function readPrivateMatches(accessToken: string) {
   if (members.length !== 2) return [];
   const memberIds = new Set(members.map((row) => row.user));
   const params = new URLSearchParams({
-    fields: fields(["id", "couple", "user", "card_id", "response", "date_updated"]),
+    fields: fields(["id", "couple", "user", "card", "result", "created_at"]),
     limit: "-1",
     "filter[couple][_eq]": member.couple,
+    "filter[event_type][_eq]": coupleSignalEvent,
   });
-  const rows = (await directusAdminRequest<SignalRow[]>(`/items/pc_couple_card_signals?${params}`))
+  const rows = (await directusAdminRequest<SignalRow[]>(`/items/pc_ai_session_events?${params}`))
     .filter((row) => memberIds.has(row.user));
   const grouped = new Map<string, SignalRow[]>();
-  for (const row of rows) grouped.set(row.card_id, [...(grouped.get(row.card_id) ?? []), row]);
+  for (const row of rows) grouped.set(row.card, [...(grouped.get(row.card) ?? []), row]);
   const matches: Array<{ card_id: string; kind: "match" | "talk"; matched_at: string | null }> = [];
   for (const [cardId, signals] of grouped) {
     const byUser = new Map(signals.map((row) => [row.user, row]));
     if (byUser.size !== 2) continue;
-    const responses = [...byUser.values()].map((row) => row.response);
+    const responses = [...byUser.values()].map((row) => row.result);
     if (!responses.every((response) => strongPositive.has(response) || discussPositive.has(response))) continue;
-    const kind = responses.some((response) => discussPositive.has(response)) ? "talk" : "match";
     matches.push({
       card_id: cardId,
-      kind,
-      matched_at: signals.map((row) => row.date_updated).filter(Boolean).sort().at(-1) ?? null,
+      kind: responses.some((response) => discussPositive.has(response)) ? "talk" : "match",
+      matched_at: signals.map((row) => row.created_at).filter(Boolean).sort().at(-1) ?? null,
     });
   }
   return matches.sort((a, b) => String(b.matched_at).localeCompare(String(a.matched_at)));
+}
+
+function historyPayload(
+  id: string,
+  coupleId: string,
+  userId: string,
+  input: z.infer<typeof HistoryInputSchema>,
+  createdAt: string,
+) {
+  return {
+    id,
+    status: "published",
+    game: config.gameId,
+    session_id: input.session_id,
+    event_type: coupleHistoryEvent,
+    card: null,
+    player_index: 0,
+    result: null,
+    reaction: null,
+    phase: input.summary?.reached_phase ?? null,
+    intensity: 0,
+    payload: input.summary,
+    couple: coupleId,
+    user: userId,
+    created_at: createdAt,
+  };
 }
 
 export async function appendCoupleHistory(accessToken: string, raw: unknown) {
@@ -602,43 +649,55 @@ export async function appendCoupleHistory(accessToken: string, raw: unknown) {
   const userId = await authenticateAccountToken(accessToken);
   const member = await requireActiveMembership(userId);
   const id = stableRecordId("history", member.couple, input.session_id);
-  const payload = {
-    id,
-    couple: member.couple,
-    session_id: input.session_id,
-    summary: input.summary,
-    created_by: userId,
-  };
+  const createdAt = new Date().toISOString();
+  const payload = historyPayload(id, member.couple, userId, input, createdAt);
   try {
-    return await directusAdminRequest<HistoryRow>(`/items/pc_couple_sessions/${id}`, {
+    await directusAdminRequest(`/items/pc_ai_session_events/${id}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
     });
   } catch (error) {
     if (!(error instanceof DirectusRequestError) || error.status !== 404) throw error;
     try {
-      return await directusAdminRequest<HistoryRow>("/items/pc_couple_sessions", {
+      await directusAdminRequest("/items/pc_ai_session_events", {
         method: "POST",
         body: JSON.stringify(payload),
       });
     } catch (createError) {
       if (!isUniqueConflict(createError)) throw createError;
-      return directusAdminRequest<HistoryRow>(`/items/pc_couple_sessions/${id}`, {
+      await directusAdminRequest(`/items/pc_ai_session_events/${id}`, {
         method: "PATCH",
         body: JSON.stringify(payload),
       });
     }
   }
+  return {
+    id,
+    couple: member.couple,
+    session_id: input.session_id,
+    summary: input.summary,
+    created_by: userId,
+    date_created: createdAt,
+  };
 }
 
 export async function readCoupleHistory(accessToken: string) {
   const userId = await authenticateAccountToken(accessToken);
   const member = await requireActiveMembership(userId);
   const params = new URLSearchParams({
-    fields: fields(["id", "couple", "session_id", "summary", "created_by", "date_created"]),
+    fields: fields(["id", "couple", "session_id", "payload", "user", "created_at"]),
     limit: "50",
-    sort: "-date_created",
+    sort: "-created_at",
     "filter[couple][_eq]": member.couple,
+    "filter[event_type][_eq]": coupleHistoryEvent,
   });
-  return directusAdminRequest<HistoryRow[]>(`/items/pc_couple_sessions?${params}`);
+  const rows = await directusAdminRequest<HistoryRow[]>(`/items/pc_ai_session_events?${params}`);
+  return rows.map((row) => ({
+    id: row.id,
+    couple: row.couple,
+    session_id: row.session_id,
+    summary: row.payload,
+    created_by: row.user,
+    date_created: row.created_at ?? null,
+  }));
 }
