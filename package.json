@@ -6,8 +6,13 @@
   "engines": {
     "node": ">=22.12"
   },
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build:domain": "npm run build --workspace @te-animas/game-domain",
+    "build:contracts": "npm run build:domain && npm run build --workspace @te-animas/contracts",
+    "build": "npm run build:contracts && tsc -p tsconfig.json",
     "start": "node dist/server.js"
   },
   "dependencies": {
