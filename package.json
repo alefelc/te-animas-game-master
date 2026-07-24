@@ -1,28 +1,20 @@
 {
-  "name": "te-animas-adaptive-api",
+  "name": "te-animas-game-master-deployment",
   "version": "5.0.1",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=22.12"
   },
+  "workspaces": [
+    "packages/*",
+    "te-animas-game-master-main"
+  ],
   "scripts": {
-    "dev": "tsx watch src/server.ts",
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/server.js",
-    "test": "vitest run --config vitest.config.ts",
-    "check": "npm run test && npm run build"
-  },
-  "dependencies": {
-    "openai": "^6.0.0",
-    "zod": "4.4.3",
-    "@te-animas/contracts": "5.0.1",
-    "@te-animas/game-domain": "5.0.1"
-  },
-  "devDependencies": {
-    "@types/node": "24.10.13",
-    "tsx": "^4.20.0",
-    "typescript": "6.0.3",
-    "vitest": "4.1.10"
+    "build:domain": "npm run build --workspace @te-animas/game-domain",
+    "build:contracts": "npm run build:domain && npm run build --workspace @te-animas/contracts",
+    "build:api": "npm run build:contracts && npm run build --workspace te-animas-adaptive-api",
+    "build": "npm run build:api",
+    "start": "npm run start --workspace te-animas-adaptive-api"
   }
 }
