@@ -18,7 +18,7 @@ RUN npm run build:api && npm prune --omit=dev
 
 FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
-ARG BUILD_RELEASE=5.0.2-r1
+ARG BUILD_RELEASE=5.0.3-r1
 LABEL org.opencontainers.image.title="¿Te animás? Game Master" \
       org.opencontainers.image.version=${BUILD_RELEASE}
 ENV NODE_ENV=production \
