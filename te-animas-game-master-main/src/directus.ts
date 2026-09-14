@@ -134,6 +134,14 @@ export async function authenticateAccountToken(accessToken: string) {
   return result.id;
 }
 
+export async function readCurrentAccountUser(accessToken: string): Promise<AccountUser> {
+  return directusAdminRequest<AccountUser>(
+    "/users/me?fields=id,email,first_name,last_name,status",
+    { signal: AbortSignal.timeout(7_000) },
+    accessToken,
+  );
+}
+
 export async function readAccountUser(userId: string): Promise<AccountUser> {
   return directusAdminRequest<AccountUser>(
     `/users/${encodeURIComponent(userId)}?fields=id,email,first_name,last_name,status`,
