@@ -48,7 +48,7 @@ import {
   compatibleCandidates,
 } from "./scene-validation.js";
 
-const API_VERSION = "5.0.2";
+const API_VERSION = "5.0.3";
 const limiter = new SlidingMinuteLimiter(config.rateLimitPerMinute);
 const gameMasterAccountLimiter = new SlidingMinuteLimiter(config.rateLimitPerMinute);
 const gameMasterAuthLimiter = new SlidingMinuteLimiter(config.rateLimitPerMinute);
