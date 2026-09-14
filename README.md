@@ -1,4 +1,4 @@
-# Game Master 5.0.2-r1 — repositorio EasyPanel
+# Game Master 5.0.3-r1 — repositorio EasyPanel
 
 Este paquete es autocontenido. Subí a GitHub todo el contenido de esta carpeta.
 El repositorio debe mostrar en su raíz:
@@ -27,7 +27,7 @@ En EasyPanel configurá:
 El único argumento de construcción necesario es:
 
 ```env
-BUILD_RELEASE=5.0.2-r1
+BUILD_RELEASE=5.0.3-r1
 ```
 
 ## Acceso obligatorio
@@ -37,4 +37,8 @@ pertenezca a una cuenta activa antes de leer la partida o consultar OpenAI. Las
 solicitudes sin sesión o con sesión inválida responden `401`; además se aplican
 límites separados por IP y por cuenta.
 
-Desplegá este servicio antes de publicar la web 5.1.1-r1.
+La validación de la sesión usa el token del propio usuario y no depende del
+token interno utilizado para perfiles o datos de pareja. Una falla en esas
+funciones opcionales ya no invalida un login correcto.
+
+Desplegá este servicio antes de publicar la web 5.1.2-r1.
