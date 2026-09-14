@@ -1,10 +1,9 @@
 import { z } from "zod";
 import {
-  authenticateAccountToken,
   inviteAccountUser,
   DirectusRequestError,
   readAccountProfile,
-  readAccountUser,
+  readCurrentAccountUser,
   saveAccountProfile,
   updateAccountUser,
   type AccountUser,
@@ -60,8 +59,8 @@ export interface AccountBundle {
 }
 
 export async function authenticateAccount(accessToken: string) {
-  const userId = await authenticateAccountToken(accessToken);
-  const user = await readAccountUser(userId);
+  const user = await readCurrentAccountUser(accessToken);
+  const userId = user.id;
   if (user.status !== "active") {
     throw new DirectusRequestError(
       "La cuenta no está activa.",
@@ -75,7 +74,17 @@ export async function authenticateAccount(accessToken: string) {
 
 export async function readAccountBundle(accessToken: string): Promise<AccountBundle> {
   const { userId, user } = await authenticateAccount(accessToken);
-  const profile = await readAccountProfile(userId);
+  let profile: StoredProfile | null = null;
+  try {
+    profile = await readAccountProfile(userId);
+  } catch (error) {
+    // El perfil mejora la experiencia, pero nunca debe invalidar un login que
+    // Directus ya autenticó. Esto permite entrar aunque la colección privada
+    // todavía no esté instalada o su token interno necesite corregirse.
+    if (!(error instanceof DirectusRequestError) || ![401, 403, 404].includes(error.status)) {
+      throw error;
+    }
+  }
   return { user, profile };
 }
 
