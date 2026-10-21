@@ -112,9 +112,21 @@ function fields(items: string[]) {
 }
 
 function hashInviteCode(code: string) {
-  return createHmac("sha256", config.coupleInvitePepper)
+  const pepper = requireInviteConfiguration();
+  return createHmac("sha256", pepper)
     .update(code.trim())
     .digest("hex");
+}
+
+function requireInviteConfiguration() {
+  if (!config.coupleInvitePepper) {
+    throw new CoupleError(
+      "Las invitaciones de pareja no están configuradas en el servidor.",
+      503,
+      "COUPLE_INVITES_NOT_CONFIGURED",
+    );
+  }
+  return config.coupleInvitePepper;
 }
 
 function equalHash(a: string, b: string) {
@@ -217,6 +229,7 @@ export async function readCouple(accessToken: string) {
 }
 
 export async function createCoupleInvite(accessToken: string, raw: unknown) {
+  requireInviteConfiguration();
   const input = InviteInputSchema.parse(raw);
   const userId = await authenticateAccountToken(accessToken);
   if (await membershipForUser(userId)) {
@@ -336,6 +349,7 @@ async function createMemberIdempotently(payload: MemberRow) {
 }
 
 export async function acceptCoupleInvite(accessToken: string, raw: unknown) {
+  requireInviteConfiguration();
   const input = LinkInputSchema.parse(raw);
   const accepterId = await authenticateAccountToken(accessToken);
 

@@ -33,6 +33,7 @@ describe("autenticación obligatoria del Game Master 5.0.3", () => {
 
   it("no invalida un login correcto si el perfil opcional no está disponible", () => {
     const account = readFileSync(new URL("./account.ts", import.meta.url), "utf8");
-    expect(account).toContain("![401, 403, 404].includes(error.status)");
+    expect(account).toContain("profileAvailable = false");
+    expect(account).toContain("profile_available: profileAvailable");
   });
 });

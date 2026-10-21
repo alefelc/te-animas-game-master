@@ -48,7 +48,7 @@ import {
   compatibleCandidates,
 } from "./scene-validation.js";
 
-const API_VERSION = "5.0.3";
+const API_VERSION = "5.0.4";
 const limiter = new SlidingMinuteLimiter(config.rateLimitPerMinute);
 const gameMasterAccountLimiter = new SlidingMinuteLimiter(config.rateLimitPerMinute);
 const gameMasterAuthLimiter = new SlidingMinuteLimiter(config.rateLimitPerMinute);
@@ -357,6 +357,13 @@ function accountErrorResponse(
 
   if (error instanceof DirectusRequestError) {
     if ([401, 403].includes(error.status)) {
+      if (error.endpoint.split("?")[0] !== "/users/me") {
+        return json(response, 503, {
+          error: "El servicio de cuentas no tiene acceso a los datos del perfil.",
+          code: "ACCOUNT_SERVICE_UNAVAILABLE",
+          request_id: requestId,
+        });
+      }
       return json(response, 401, {
         error: "La sesión venció o no es válida.",
         code: "ACCOUNT_UNAUTHORIZED",
@@ -372,10 +379,10 @@ function accountErrorResponse(
       });
     }
 
-    if (error.status === 503 || error.code === "ACCOUNT_REGISTRATION_NOT_CONFIGURED") {
+    if (error.status >= 500) {
       return json(response, 503, {
-        error: "El registro de cuentas todavía no está configurado en el servidor.",
-        code: "ACCOUNT_REGISTRATION_NOT_CONFIGURED",
+        error: "El servicio de cuentas no está disponible temporalmente.",
+        code: "ACCOUNT_SERVICE_UNAVAILABLE",
         request_id: requestId,
       });
     }
@@ -473,7 +480,7 @@ function registrationErrorResponse(
   }
 
   if (error instanceof DirectusRequestError) {
-    if (error.code === "ACCOUNT_REGISTRATION_NOT_CONFIGURED" || error.status === 503) {
+    if (error.code === "ACCOUNT_REGISTRATION_NOT_CONFIGURED") {
       return json(response, 503, {
         error: "El registro de cuentas todavía no está configurado en el servidor.",
         code: "ACCOUNT_REGISTRATION_NOT_CONFIGURED",
@@ -481,7 +488,7 @@ function registrationErrorResponse(
       });
     }
 
-    if ([400, 401, 403, 404, 422].includes(error.status)) {
+    if ([400, 401, 403, 404, 422].includes(error.status) || error.status >= 500) {
       console.error(`[${requestId}] Directus rechazó la invitación`, {
         status: error.status,
         code: error.code,
@@ -754,6 +761,10 @@ const server = createServer(async (request, response) => {
       ok: true,
       service: "te-animas-adaptive-api",
       version: API_VERSION,
+      features: {
+        account_registration: Boolean(config.playerRoleId),
+        couple_invitations: Boolean(config.coupleInvitePepper),
+      },
       request_id: requestId,
     });
   }

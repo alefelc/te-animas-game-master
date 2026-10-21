@@ -56,12 +56,12 @@ export async function registerAccount(input: unknown): Promise<void> {
 export interface AccountBundle {
   user: AccountUser;
   profile: StoredProfile | null;
+  profile_available: boolean;
 }
 
 export async function authenticateAccount(accessToken: string) {
   const user = await readCurrentAccountUser(accessToken);
-  const userId = user.id;
-  if (user.status !== "active") {
+  if (!user?.id || user.status !== "active") {
     throw new DirectusRequestError(
       "La cuenta no está activa.",
       403,
@@ -69,23 +69,23 @@ export async function authenticateAccount(accessToken: string) {
       "/users/me",
     );
   }
+  const userId = user.id;
   return { userId, user };
 }
 
 export async function readAccountBundle(accessToken: string): Promise<AccountBundle> {
   const { userId, user } = await authenticateAccount(accessToken);
   let profile: StoredProfile | null = null;
+  let profileAvailable = true;
   try {
     profile = await readAccountProfile(userId);
   } catch (error) {
     // El perfil mejora la experiencia, pero nunca debe invalidar un login que
     // Directus ya autenticó. Esto permite entrar aunque la colección privada
     // todavía no esté instalada o su token interno necesite corregirse.
-    if (!(error instanceof DirectusRequestError) || ![401, 403, 404].includes(error.status)) {
-      throw error;
-    }
+    profileAvailable = false;
   }
-  return { user, profile };
+  return { user, profile, profile_available: profileAvailable };
 }
 
 export async function patchAccount(

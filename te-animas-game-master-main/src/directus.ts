@@ -51,12 +51,17 @@ export async function directusAdminRequest<T>(
     headers.set("Content-Type", "application/json; charset=utf-8");
   }
 
-  const response = await fetch(`${config.directusUrl}${endpoint}`, {
-    ...init,
-    headers,
-    cache: "no-store",
-    signal: init.signal ?? AbortSignal.timeout(10_000),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${config.directusUrl}${endpoint}`, {
+      ...init,
+      headers,
+      cache: "no-store",
+      signal: init.signal ?? AbortSignal.timeout(10_000),
+    });
+  } catch {
+    throw new DirectusRequestError("Directus no está disponible.", 503, "DIRECTUS_UNAVAILABLE", endpoint);
+  }
 
   const text = await response.text();
   let payload: unknown = null;
@@ -462,7 +467,7 @@ export async function inviteAccountUser(input: AccountRegistrationInput): Promis
   const existing = existingRows[0] ?? null;
 
   // Respuesta deliberadamente neutra: no revelamos si el email ya existe.
-  if (existing && existing.status !== "invited") return;
+  if (existing && (existing.status !== "invited" || existing.role !== config.playerRoleId)) return;
 
   if (!existing) {
     try {

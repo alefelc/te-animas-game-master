@@ -1,6 +1,6 @@
 {
   "name": "te-animas-game-master-deployment",
-  "version": "5.0.3",
+  "version": "5.0.4",
   "private": true,
   "type": "module",
   "engines": {
@@ -16,6 +16,7 @@
     "build:api": "npm run build:contracts && npm run build --workspace te-animas-adaptive-api",
     "build": "npm run build:api",
     "test": "npm run test --workspace te-animas-adaptive-api",
+    "test:smoke": "npm run build:api && node scripts/smoke-accounts.mjs",
     "start": "npm run start --workspace te-animas-adaptive-api"
   }
 }

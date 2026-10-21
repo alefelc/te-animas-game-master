@@ -22,7 +22,7 @@ const schema = z.object({
   RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(1000).default(60),
   ACCOUNT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(1000).default(120),
   REGISTER_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(60).default(3),
-  PLAYER_ROLE_ID: z.string().uuid().optional(),
+  PLAYER_ROLE_ID: z.preprocess((value) => value === "" ? undefined : value, z.string().uuid().optional()),
   ACCOUNT_INVITE_URL: z.string().url().default("https://teanimas.com/?auth=accept-invite"),
   PUBLIC_APP_URL: z.string().url().default("https://teanimas.com/"),
   GAME_ID: z
@@ -31,21 +31,15 @@ const schema = z.object({
     .default("62a628ac-92e2-51e4-add3-62449e619e00"),
   COUPLE_INVITE_PEPPER: z.string().optional().default(""),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
-}).superRefine((value, context) => {
-  if (
-    value.NODE_ENV === "production" &&
-    value.COUPLE_INVITE_PEPPER.trim().length < 32
-  ) {
-    context.addIssue({
-      code: "custom",
-      path: ["COUPLE_INVITE_PEPPER"],
-      message:
-        "COUPLE_INVITE_PEPPER debe ser un secreto independiente de al menos 32 caracteres en producción.",
-    });
-  }
 });
 
 const parsed = schema.parse(process.env);
+// Una función opcional mal configurada no puede apagar cuentas, registro e IA.
+// Sin un secreto independiente, las invitaciones se bloquean (nunca hay fallback).
+const coupleInvitePepper = parsed.COUPLE_INVITE_PEPPER.trim().length >= 32 &&
+  parsed.COUPLE_INVITE_PEPPER !== parsed.DIRECTUS_TOKEN
+  ? parsed.COUPLE_INVITE_PEPPER
+  : null;
 
 export const config = {
   environment: parsed.NODE_ENV,
@@ -70,6 +64,6 @@ export const config = {
   accountInviteUrl: parsed.ACCOUNT_INVITE_URL,
   publicAppUrl: parsed.PUBLIC_APP_URL.replace(/\/+$/, "/"),
   gameId: parsed.GAME_ID,
-  coupleInvitePepper: parsed.COUPLE_INVITE_PEPPER || parsed.DIRECTUS_TOKEN,
+  coupleInvitePepper,
   logLevel: parsed.LOG_LEVEL,
 };
